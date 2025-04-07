@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"gokit/log"
 	sd "gokit/servicediscovery/discovery"
+	"maps"
 	"math/rand"
 	"strings"
 	"sync"
@@ -21,7 +22,6 @@ const (
 
 	// etcd put事件
 	eventType_Put = 0
-
 	// etcd delete事件
 	eventType_Delete = 1
 )
@@ -101,7 +101,6 @@ type etcdImp struct {
 
 	// 等待etcd watch返回的管道
 	rch clientv3.WatchChan
-
 	// 客户端申请的租约有效期
 	leaseTTL int64
 }
@@ -109,8 +108,7 @@ type etcdImp struct {
 // Start Start the etcd client service
 func (e *etcdImp) Start() <-chan error {
 	errChan := make(chan error, 10)
-	// 将etcd中已经存在的服务缓存到本地（e.services）
-	go e.cacheExistedServices()
+	go e.loadExistedServices()
 	go func() {
 		defer func() {
 			if r := recover(); r != nil {
@@ -153,16 +151,18 @@ func (e *etcdImp) Stop() {
 	}
 
 	for k := range e.regServs {
-		e.cli.Delete(e.ctx, k) // 停止时，不关注error
+		if _, err := e.cli.Delete(e.ctx, k); err != nil {
+			log.Warn("etcd stop, Delete key error:%v", err)
+		}
 	}
 
 	if err := e.cli.Close(); err != nil {
-		log.Warn("etcd stop, Close error %v", err)
+		log.Warn("etcd stop, Close error:%v", err)
 	}
 }
 
-// PutService 发布服务到etcd
-func (e *etcdImp) PutService(serviceName string, rpcAddr string) (string, error) {
+// RegisterService 发布服务到etcd，返回服务唯一标识（gate:b748593c-ec50-4b4c-8b4a-21705dd1789f）
+func (e *etcdImp) RegisterService(serviceName string, rpcAddr string) (string, error) {
 	serviceName = strings.ToLower(serviceName)
 	// 通过UUID，生成新的服务名，确保唯一性
 	serviceUUID := uuid.New().String()
@@ -209,10 +209,10 @@ func (e *etcdImp) putServiceKey(key string, rpcAddr string) error {
 	return nil
 }
 
+// GetService 获取服务地址
 func (e *etcdImp) GetService(serviceName string) (string, error) {
 	serviceName = strings.ToLower(serviceName)
 	var serviceUUID string
-
 	if index := strings.Index(serviceName, ":"); index != -1 {
 		serviceName, serviceUUID = serviceName[:index], serviceName[index+1:]
 	}
@@ -220,7 +220,9 @@ func (e *etcdImp) GetService(serviceName string) (string, error) {
 	e.mx.RLock()
 	defer e.mx.RUnlock()
 	services, ok := e.allServices[serviceName]
-	if !ok || len(services.ids) == 0 {
+	if !ok {
+		return "", fmt.Errorf("not exist service (%s)", serviceName)
+	} else if len(services.ids) == 0 {
 		return "", fmt.Errorf("not found service (%s)", serviceName)
 	}
 	// 从可用的服务中随机选择一个
@@ -230,15 +232,14 @@ func (e *etcdImp) GetService(serviceName string) (string, error) {
 	}
 	addr, ok := services.id2addr[serviceUUID]
 	if !ok {
-		log.Debug("GetService %s, rpc addr %s, id2addr %#v", serviceName, addr, services.id2addr)
-		return "", fmt.Errorf("%s rpc not found", serviceName)
+		return "", fmt.Errorf("not found addr of service (%s)", serviceName)
 	}
 	return addr, nil
 }
 
+// GetAllService 获取所有服务地址
 func (e *etcdImp) GetAllService(serviceName string) (rpcAddrs map[string]string, err error) {
 	serviceName = strings.ToLower(serviceName)
-
 	if index := strings.Index(serviceName, ":"); index != -1 {
 		serviceName = serviceName[:index]
 	}
@@ -247,12 +248,9 @@ func (e *etcdImp) GetAllService(serviceName string) (rpcAddrs map[string]string,
 	defer e.mx.RUnlock()
 	services, ok := e.allServices[serviceName]
 	if !ok {
-		return nil, fmt.Errorf("not found service (%s)", serviceName)
+		return nil, fmt.Errorf("not exist service (%s)", serviceName)
 	}
-	rpcAddrs = make(map[string]string)
-	for id, addr := range services.id2addr {
-		rpcAddrs[id] = addr
-	}
+	rpcAddrs = maps.Clone(services.id2addr)
 	return
 }
 
@@ -271,7 +269,7 @@ func (e *etcdImp) onWatchEvent(evt *clientv3.Event) {
 	e.mx.Lock()
 	defer e.mx.Unlock()
 
-	if int32(evt.Type) == eventType_Delete { // 为了不引入mvccpb
+	if int32(evt.Type) == eventType_Delete {
 		if e.delService(name, id) {
 			log.Info("etcd onWatchEvent delete (%s,%s)", name, id)
 		}
@@ -304,7 +302,7 @@ func (e *etcdImp) parseKey(key string) (name, id string, err error) {
 	return
 }
 
-// 添加服务
+// 添加发现的服务
 func (e *etcdImp) addService(name string, id string, addr string) bool {
 	services, ok := e.allServices[name]
 	if !ok {
@@ -321,7 +319,7 @@ func (e *etcdImp) addService(name string, id string, addr string) bool {
 	return false
 }
 
-// 删除服务
+// 删除下线的服务
 func (e *etcdImp) delService(name string, id string) bool {
 	services, ok := e.allServices[name]
 	if !ok {
@@ -340,8 +338,8 @@ func (e *etcdImp) delService(name string, id string) bool {
 	return false
 }
 
-// 将客户端watch之前已经存在于etcd的service缓存下来
-func (e *etcdImp) cacheExistedServices() {
+// 将已经注册于etcd的service缓存load进来
+func (e *etcdImp) loadExistedServices() {
 	rsp, err := e.cli.Get(e.ctx, e.prefix, clientv3.WithPrefix())
 	if err != nil {
 		log.Warn("cacheExistedServices Get error %v", err)
@@ -363,7 +361,7 @@ func (e *etcdImp) cacheExistedServices() {
 		}
 		if name, id, err := e.parseKey(key); err == nil {
 			if e.addService(name, id, value) {
-				log.Info("cacheExistedServices addService, %s -> %s", key, value)
+				log.Info("loadExistedServices addService, %s -> %s", key, value)
 			}
 		}
 	}

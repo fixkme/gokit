@@ -5,9 +5,9 @@ type Discovery interface {
 
 	Stop()
 
-	PutService(string, string) (string, error)
+	RegisterService(serviceName string, rpcAddr string) (string, error)
 
-	GetService(serviceName string) (gprcAddr string, err error)
+	GetService(serviceName string) (rpcAddr string, err error)
 
-	GetAllService(serviceName string) (gprcAddr map[string]string, err error)
+	GetAllService(serviceName string) (rpcAddrs map[string]string, err error)
 }
