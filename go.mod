@@ -9,6 +9,7 @@ require (
 	github.com/rs/xid v1.5.0
 	go.etcd.io/etcd/client/v3 v3.5.12
 	go.mongodb.org/mongo-driver v1.13.4
+	google.golang.org/protobuf v1.36.5
 )
 
 require (
@@ -40,5 +41,4 @@ require (
 	google.golang.org/genproto/googleapis/api v0.0.0-20230822172742-b8732ec3820d // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20230822172742-b8732ec3820d // indirect
 	google.golang.org/grpc v1.59.0 // indirect
-	google.golang.org/protobuf v1.36.5 // indirect
 )
