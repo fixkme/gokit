@@ -3,7 +3,6 @@ package rpc
 import (
 	"context"
 	"encoding/binary"
-	"encoding/json"
 	"fmt"
 	"reflect"
 
@@ -24,14 +23,42 @@ type ServiceDesc struct {
 	Methods     []MethodDesc
 }
 
+type MsgHandler func(c gnet.Conn, msg *RpcRequestMessage)
+
+type Server struct {
+	gnet.BuiltinEventEngine
+	services   map[string]*serviceInfo // service name -> service info
+	processors []*rpcProcessor
+}
+
+type ServerOpt struct {
+	ProcessorSize int64
+}
+
+func NewServer(opt *ServerOpt) *Server {
+	s := &Server{
+		services: make(map[string]*serviceInfo),
+	}
+	if opt.ProcessorSize > 0 {
+		// 异步模式
+		for i := 0; i < int(opt.ProcessorSize); i++ {
+			s.processors = append(s.processors, &rpcProcessor{
+				server: s,
+				inChan: make(chan *rpcClient, 1024),
+			})
+		}
+	}
+	return s
+}
+
 type serviceInfo struct {
 	serviceImpl any
 	methods     map[string]*MethodDesc
 }
 
-type Server struct {
-	gnet.BuiltinEventEngine
-	services map[string]*serviceInfo // service name -> service info
+type rpcClient struct {
+	cli gnet.Conn
+	msg *RpcRequestMessage
 }
 
 func (s *Server) RegisterService(sd *ServiceDesc, ss any) {
@@ -39,7 +66,7 @@ func (s *Server) RegisterService(sd *ServiceDesc, ss any) {
 		ht := reflect.TypeOf(sd.HandlerType).Elem()
 		st := reflect.TypeOf(ss)
 		if !st.Implements(ht) {
-			err := fmt.Errorf("grpc: Server.RegisterService found the handler of type %v that does not satisfy %v", st, ht)
+			err := fmt.Errorf("rpc: Server.RegisterService found the handler of type %v that does not satisfy %v", st, ht)
 			panic(err)
 		}
 	}
@@ -62,35 +89,77 @@ func (s *Server) register(sd *ServiceDesc, ss any) {
 	s.services[sd.ServiceName] = info
 }
 
-type RpcMessage struct {
-	ServiceName string
-	MethodName  string
-	MessageName string //full name
-	Payload     []byte //data
-	ErrStr      string //rsp error
+func (s *Server) handler(c gnet.Conn, msg *RpcRequestMessage) {
+	serviceInfo, ok := s.services[msg.ServiceName]
+	if !ok {
+		return
+	}
+	md, ok := serviceInfo.methods[msg.MethodName]
+	if !ok {
+		return
+	}
+	reply, err := md.Handler(serviceInfo.serviceImpl, c.Context().(context.Context), msg.Payload)
+	//c.AsyncWrite()
+	return
 }
 
 func (s *Server) OnTraffic(c gnet.Conn) (r gnet.Action) {
 	const lengthSize = 4 //32bits uint32
-	lenBuf, err := c.Peek(lengthSize)
-	if err != nil {
-		return gnet.None
-	}
-	dataLen := binary.BigEndian.Uint32(lenBuf)
-	totalLen := lengthSize + int(dataLen)
-	bufferLen := c.InboundBuffered()
-	if totalLen < bufferLen {
-		return gnet.None
-	}
-	msgBuf, err := c.Next(totalLen)
-	if err != nil {
-		return gnet.None
-	}
-	// 反序列化
-	msg := &RpcMessage{}
-	if err = json.Unmarshal(msgBuf, msg); err != nil {
-		return gnet.None
-	}
+	for {
+		lenBuf, err := c.Peek(lengthSize)
+		if err != nil {
+			return gnet.None
+		}
+		dataLen := binary.BigEndian.Uint32(lenBuf)
+		totalLen := lengthSize + int(dataLen)
+		bufferLen := c.InboundBuffered()
+		if totalLen < bufferLen {
+			return gnet.None
+		}
+		msgBuf, err := c.Next(totalLen)
+		if err != nil {
+			return gnet.None
+		}
+		// 反序列化
+		msg := &RpcRequestMessage{}
+		if err = proto.Unmarshal(msgBuf, msg); err != nil {
+			return gnet.None
+		}
+		// 分发消息
+		if len(s.processors) > 0 {
 
-	return gnet.None
+		}
+		return gnet.None
+	}
+}
+
+func (s *Server) Run() {
+	for i := 0; i < int(s.processorSize); i++ {
+		go func() {
+			for {
+				select {
+				case v, ok := <-s.inChan:
+					if ok {
+						s.handler(v.cli, v.msg)
+					}
+				}
+			}
+		}()
+	}
+}
+
+type rpcProcessor struct {
+	server *Server
+	inChan chan *rpcClient
+}
+
+func (p *rpcProcessor) run() {
+	for {
+		select {
+		case v, ok := <-p.inChan:
+			if ok {
+				p.server.handler(v.cli, v.msg)
+			}
+		}
+	}
 }
