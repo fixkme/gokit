@@ -6,11 +6,13 @@ import (
 	"fmt"
 	"reflect"
 
+	"hash/fnv"
+
 	"github.com/panjf2000/gnet/v2"
 	"google.golang.org/protobuf/proto"
 )
 
-type MethodHandler func(srv any, ctx context.Context, in proto.Message) (any, error)
+type MethodHandler func(srv any, ctx context.Context, in any) (proto.Message, error)
 
 type MethodDesc struct {
 	MethodName string
@@ -98,8 +100,32 @@ func (s *Server) handler(c gnet.Conn, msg *RpcRequestMessage) {
 	if !ok {
 		return
 	}
-	reply, err := md.Handler(serviceInfo.serviceImpl, c.Context().(context.Context), msg.Payload)
-	//c.AsyncWrite()
+	ctx := c.Context().(context.Context)
+	reply, err := md.Handler(serviceInfo.serviceImpl, ctx, msg.Payload)
+	rsp := &RpcResponseMessage{}
+	if err != nil {
+		rsp.Error = err.Error()
+	} else {
+		rspData, err := proto.Marshal(reply)
+		if err != nil {
+			rsp.Error = err.Error()
+		} else {
+			rsp.Payload = rspData
+		}
+	}
+	// 序列化
+	outBuf, err := proto.Marshal(rsp)
+	if err != nil {
+		return
+	}
+	lenBuf := make([]byte, 4)
+	binary.BigEndian.PutUint32(lenBuf, uint32(len(outBuf)))
+	if _, err := c.Write(lenBuf); err != nil {
+		return
+	}
+	if _, err := c.Write(outBuf); err != nil {
+		return
+	}
 	return
 }
 
@@ -125,26 +151,29 @@ func (s *Server) OnTraffic(c gnet.Conn) (r gnet.Action) {
 		if err = proto.Unmarshal(msgBuf, msg); err != nil {
 			return gnet.None
 		}
-		// 分发消息
-		if len(s.processors) > 0 {
 
+		if len(s.processors) > 0 {
+			// 分发消息
+			var idx int
+			if msg.Target > 0 {
+				idx = int(msg.Target) % len(s.processors)
+			} else {
+				h := fnv.New32a()
+				h.Write([]byte(c.RemoteAddr().String()))
+				idx = int(h.Sum32() % uint32(len(s.processors)))
+			}
+			s.processors[idx].inChan <- &rpcClient{c, msg}
+		} else {
+			// 直接处理
+			s.handler(c, msg)
 		}
 		return gnet.None
 	}
 }
 
 func (s *Server) Run() {
-	for i := 0; i < int(s.processorSize); i++ {
-		go func() {
-			for {
-				select {
-				case v, ok := <-s.inChan:
-					if ok {
-						s.handler(v.cli, v.msg)
-					}
-				}
-			}
-		}()
+	for i := 0; i < len(s.processors); i++ {
+		go s.processors[i].run()
 	}
 }
 

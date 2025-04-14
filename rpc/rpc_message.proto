@@ -12,9 +12,6 @@ message RpcRequestMessage {
 }
 
 message RpcResponseMessage {
-    int64 role_id = 1;
-    string service = 2;
-    string method = 3;
     bytes payload = 4;
     string error = 5;
 }
