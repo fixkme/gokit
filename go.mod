@@ -1,4 +1,4 @@
-module gokit
+module github.com/fixkme/gokit
 
 go 1.22.12
 

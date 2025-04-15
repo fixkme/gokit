@@ -2,10 +2,11 @@ package delta
 
 import (
 	"context"
-	"gokit/log"
 	"runtime/debug"
 	"sync"
 	"time"
+
+	"github.com/fixkme/gokit/log"
 
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"

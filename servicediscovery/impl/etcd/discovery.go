@@ -4,13 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"gokit/log"
-	sd "gokit/servicediscovery/discovery"
 	"maps"
 	"math/rand"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/fixkme/gokit/log"
+	sd "github.com/fixkme/gokit/servicediscovery/discovery"
 
 	"github.com/google/uuid"
 	clientv3 "go.etcd.io/etcd/client/v3"

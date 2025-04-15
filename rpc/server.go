@@ -12,7 +12,7 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-type MethodHandler func(srv any, ctx context.Context, in any) (proto.Message, error)
+type MethodHandler func(srv any, ctx context.Context, in []byte) (proto.Message, error)
 
 type MethodDesc struct {
 	MethodName string
@@ -26,6 +26,8 @@ type ServiceDesc struct {
 }
 
 type MsgHandler func(c gnet.Conn, msg *RpcRequestMessage)
+
+type ServerInterceptor func(ctx context.Context, req any, info *RpcRequestMessage, handler MsgHandler) (resp any, err error)
 
 type Server struct {
 	gnet.BuiltinEventEngine
@@ -100,6 +102,7 @@ func (s *Server) handler(c gnet.Conn, msg *RpcRequestMessage) {
 	if !ok {
 		return
 	}
+	// handler msg
 	ctx := c.Context().(context.Context)
 	reply, err := md.Handler(serviceInfo.serviceImpl, ctx, msg.Payload)
 	rsp := &RpcResponseMessage{}
