@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
+	"log"
 	"reflect"
 
 	"hash/fnv"
@@ -31,17 +32,24 @@ type ServerInterceptor func(ctx context.Context, req any, info *RpcRequestMessag
 
 type Server struct {
 	gnet.BuiltinEventEngine
+	gnet.Engine
 	services   map[string]*serviceInfo // service name -> service info
 	processors []*rpcProcessor
+	done       chan struct{}
+	opt        *ServerOpt
 }
 
 type ServerOpt struct {
+	gnet.Options
+	Addr          string
 	ProcessorSize int64
 }
 
 func NewServer(opt *ServerOpt) *Server {
 	s := &Server{
 		services: make(map[string]*serviceInfo),
+		done:     make(chan struct{}),
+		opt:      opt,
 	}
 	if opt.ProcessorSize > 0 {
 		// 异步模式
@@ -94,39 +102,55 @@ func (s *Server) register(sd *ServiceDesc, ss any) {
 }
 
 func (s *Server) handler(c gnet.Conn, msg *RpcRequestMessage) {
-	serviceInfo, ok := s.services[msg.ServiceName]
-	if !ok {
-		return
-	}
-	md, ok := serviceInfo.methods[msg.MethodName]
-	if !ok {
-		return
-	}
-	// handler msg
-	ctx := c.Context().(context.Context)
-	reply, err := md.Handler(serviceInfo.serviceImpl, ctx, msg.Payload)
+	defer func() {
+		if err := recover(); err != nil {
+			log.Printf("handler rpc msg panic,%s, stack:%v\n", msg.String(), err)
+		}
+	}()
+
 	rsp := &RpcResponseMessage{}
-	if err != nil {
-		rsp.Error = err.Error()
+
+	var md *MethodDesc
+	serviceInfo, ok := s.services[msg.ServiceName]
+	if ok {
+		md, ok = serviceInfo.methods[msg.MethodName]
+		if !ok {
+			rsp.Error = fmt.Sprintf("not found method:%s", msg.MethodName)
+		}
 	} else {
-		rspData, err := proto.Marshal(reply)
+		rsp.Error = fmt.Sprintf("not found service:%s", msg.ServiceName)
+	}
+
+	// handler msg
+	if md != nil {
+		ctx := c.Context().(context.Context)
+		reply, err := md.Handler(serviceInfo.serviceImpl, ctx, msg.Payload)
 		if err != nil {
 			rsp.Error = err.Error()
 		} else {
-			rsp.Payload = rspData
+			rspData, err := proto.Marshal(reply)
+			if err != nil {
+				rsp.Error = err.Error()
+			} else {
+				rsp.Payload = rspData
+			}
 		}
 	}
+
 	// 序列化
 	outBuf, err := proto.Marshal(rsp)
 	if err != nil {
+		log.Printf("handler rpc msg proto.Marshal err:%v\n", err)
 		return
 	}
 	lenBuf := make([]byte, 4)
 	binary.BigEndian.PutUint32(lenBuf, uint32(len(outBuf)))
 	if _, err := c.Write(lenBuf); err != nil {
+		log.Printf("handler rpc msg Write lenBuf err:%v\n", err)
 		return
 	}
 	if _, err := c.Write(outBuf); err != nil {
+		log.Printf("handler rpc msg Write outBuf err:%v\n", err)
 		return
 	}
 	return
@@ -145,13 +169,14 @@ func (s *Server) OnTraffic(c gnet.Conn) (r gnet.Action) {
 		if totalLen < bufferLen {
 			return gnet.None
 		}
-		msgBuf, err := c.Next(totalLen)
+		packetBuf, err := c.Next(totalLen)
 		if err != nil {
 			return gnet.None
 		}
 		// 反序列化
 		msg := &RpcRequestMessage{}
-		if err = proto.Unmarshal(msgBuf, msg); err != nil {
+		if err = proto.Unmarshal(packetBuf[lengthSize:], msg); err != nil {
+			log.Printf("proto.Unmarshal RpcRequestMessage err:%v\n", err)
 			return gnet.None
 		}
 
@@ -176,7 +201,10 @@ func (s *Server) OnTraffic(c gnet.Conn) (r gnet.Action) {
 
 func (s *Server) Run() {
 	for i := 0; i < len(s.processors); i++ {
-		go s.processors[i].run()
+		go s.processors[i].run(s.done)
+	}
+	if err := gnet.Run(s, s.opt.Addr, gnet.WithOptions(s.opt.Options)); err != nil {
+		log.Fatalf("Server Run with error: %v", err)
 	}
 }
 
@@ -185,9 +213,11 @@ type rpcProcessor struct {
 	inChan chan *rpcClient
 }
 
-func (p *rpcProcessor) run() {
+func (p *rpcProcessor) run(done <-chan struct{}) {
 	for {
 		select {
+		case <-done:
+			return
 		case v, ok := <-p.inChan:
 			if ok {
 				p.server.handler(v.cli, v.msg)
