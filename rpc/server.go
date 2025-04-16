@@ -127,7 +127,7 @@ func (s *Server) handler(c gnet.Conn, msg *RpcRequestMessage) {
 
 	// handler msg
 	if md != nil {
-		ctx := c.Context().(context.Context)
+		ctx, _ := c.Context().(context.Context)
 		reply, err := md.Handler(serviceInfo.serviceImpl, ctx, msg.Payload)
 		if err != nil {
 			rsp.Error = err.Error()
