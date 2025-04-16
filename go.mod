@@ -4,7 +4,6 @@ go 1.22.12
 
 require (
 	github.com/armon/go-radix v1.0.0
-	github.com/fixkme/protoc-gen-gom/example/pbout/go v0.0.0-20250416055218-c75962b2a892
 	github.com/google/uuid v1.6.0
 	github.com/panjf2000/gnet/v2 v2.7.2
 	github.com/redis/go-redis/v9 v9.7.3
