@@ -73,6 +73,10 @@ type rpcClient struct {
 	msg *RpcRequestMessage
 }
 
+type ServiceRegistrar interface {
+	RegisterService(desc *ServiceDesc, impl any)
+}
+
 func (s *Server) RegisterService(sd *ServiceDesc, ss any) {
 	if ss != nil {
 		ht := reflect.TypeOf(sd.HandlerType).Elem()
