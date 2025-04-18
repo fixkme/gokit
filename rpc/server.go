@@ -3,6 +3,7 @@ package rpc
 import (
 	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"log"
 	"reflect"
@@ -26,9 +27,18 @@ type ServiceDesc struct {
 	Methods     []MethodDesc
 }
 
-type MsgHandler func(c gnet.Conn, msg *RpcRequestMessage)
+type RpcContext struct {
+	Req     *RpcRequestMessage
+	Conn    gnet.Conn
+	SrvImpl any
+	Method  MethodHandler
+}
 
-type ServerInterceptor func(ctx context.Context, req any, info *RpcRequestMessage, handler MsgHandler) (resp any, err error)
+type RpcHandler func(*RpcContext, RpcSerializer)
+
+type RpcSerializer func(*RpcContext, proto.Message, error)
+
+type Dispatcher func(gnet.Conn, *RpcRequestMessage, int) int
 
 type Server struct {
 	gnet.BuiltinEventEngine
@@ -41,8 +51,10 @@ type Server struct {
 
 type ServerOpt struct {
 	gnet.Options
-	Addr          string
-	ProcessorSize int64
+	Addr           string
+	ProcessorSize  int64
+	DispatcherFunc Dispatcher
+	HandlerFunc    RpcHandler
 }
 
 func NewServer(opt *ServerOpt) *Server {
@@ -50,6 +62,12 @@ func NewServer(opt *ServerOpt) *Server {
 		services: make(map[string]*serviceInfo),
 		done:     make(chan struct{}),
 		opt:      opt,
+	}
+	if opt.HandlerFunc == nil {
+		opt.HandlerFunc = func(rc *RpcContext, ser RpcSerializer) {
+			reply, err := rc.Method(rc.SrvImpl, context.Background(), rc.Req.Payload)
+			ser(rc, reply, err)
+		}
 	}
 	if opt.ProcessorSize > 0 {
 		// 异步模式
@@ -69,8 +87,8 @@ type serviceInfo struct {
 }
 
 type rpcClient struct {
-	cli gnet.Conn
-	msg *RpcRequestMessage
+	conn gnet.Conn
+	msg  *RpcRequestMessage
 }
 
 type ServiceRegistrar interface {
@@ -106,42 +124,55 @@ func (s *Server) register(sd *ServiceDesc, ss any) {
 }
 
 func (s *Server) handler(c gnet.Conn, msg *RpcRequestMessage) {
+	log.Printf("%d start handler rpc msg:%s\n", GoroutineID(), msg.String())
+	ctx := new(RpcContext)
+	ctx.Conn = c
+	ctx.Req = msg
 	defer func() {
 		if err := recover(); err != nil {
 			log.Printf("handler rpc msg panic,%s, stack:%v\n", msg.String(), err)
+			s.serializeResponse(ctx, nil, errors.New("handler rpc msg panic"))
 		}
 	}()
-
-	rsp := &RpcResponseMessage{}
 
 	var md *MethodDesc
 	serviceInfo, ok := s.services[msg.ServiceName]
 	if ok {
 		md, ok = serviceInfo.methods[msg.MethodName]
 		if !ok {
-			rsp.Error = fmt.Sprintf("not found method:%s", msg.MethodName)
+			err := fmt.Errorf("not found method:%s", msg.MethodName)
+			s.serializeResponse(ctx, nil, err)
+			return
 		}
 	} else {
-		rsp.Error = fmt.Sprintf("not found service:%s", msg.ServiceName)
+		err := fmt.Errorf("not found service:%s", msg.ServiceName)
+		s.serializeResponse(ctx, nil, err)
+		return
 	}
+
+	ctx.SrvImpl = serviceInfo.serviceImpl
+	ctx.Method = md.Handler
 
 	// handler msg
-	if md != nil {
-		ctx, _ := c.Context().(context.Context)
-		reply, err := md.Handler(serviceInfo.serviceImpl, ctx, msg.Payload)
-		if err != nil {
-			rsp.Error = err.Error()
+	s.opt.HandlerFunc(ctx, s.serializeResponse)
+	log.Printf("%d succeed handler rpc msg:%s\n", GoroutineID(), msg.String())
+}
+
+func (s *Server) serializeResponse(ctx *RpcContext, reply proto.Message, err error) {
+	rsp := new(RpcResponseMessage)
+	rsp.Seq = ctx.Req.Seq
+	if err == nil {
+		rspData, err := proto.Marshal(reply)
+		if err == nil {
+			rsp.Payload = rspData
 		} else {
-			rspData, err := proto.Marshal(reply)
-			if err != nil {
-				rsp.Error = err.Error()
-			} else {
-				rsp.Payload = rspData
-			}
+			rsp.Error = err.Error()
 		}
+	} else {
+		rsp.Error = err.Error()
 	}
 
-	// 序列化
+	c := ctx.Conn
 	outBuf, err := proto.Marshal(rsp)
 	if err != nil {
 		log.Printf("handler rpc msg proto.Marshal err:%v\n", err)
@@ -157,50 +188,66 @@ func (s *Server) handler(c gnet.Conn, msg *RpcRequestMessage) {
 		log.Printf("handler rpc msg Write outBuf err:%v\n", err)
 		return
 	}
-	return
 }
 
 func (s *Server) OnTraffic(c gnet.Conn) (r gnet.Action) {
 	const lengthSize = 4 //32bits uint32
 	for {
+		log.Printf("%d server read cli buffer surplus size:%d", GoroutineID(), c.InboundBuffered())
 		lenBuf, err := c.Peek(lengthSize)
 		if err != nil {
 			return gnet.None
 		}
-		dataLen := binary.BigEndian.Uint32(lenBuf)
-		totalLen := lengthSize + int(dataLen)
+		dataLen := int(binary.BigEndian.Uint32(lenBuf))
+		totalLen := lengthSize + dataLen
 		bufferLen := c.InboundBuffered()
-		if totalLen < bufferLen {
+		if bufferLen < totalLen {
 			return gnet.None
 		}
-		packetBuf, err := c.Next(totalLen)
+		c.Discard(lengthSize)
+		packetBuf, err := c.Next(dataLen)
 		if err != nil {
 			return gnet.None
 		}
 		// 反序列化
 		msg := &RpcRequestMessage{}
-		if err = proto.Unmarshal(packetBuf[lengthSize:], msg); err != nil {
+		if err = proto.Unmarshal(packetBuf, msg); err != nil {
 			log.Printf("proto.Unmarshal RpcRequestMessage err:%v\n", err)
 			return gnet.None
 		}
 
-		if len(s.processors) > 0 {
+		if pn := len(s.processors); pn > 0 {
 			// 分发消息
 			var idx int
-			if msg.Target > 0 {
-				idx = int(msg.Target) % len(s.processors)
+			if s.opt.DispatcherFunc != nil {
+				idx = s.opt.DispatcherFunc(c, msg, pn)
 			} else {
 				h := fnv.New32a()
 				h.Write([]byte(c.RemoteAddr().String()))
 				idx = int(h.Sum32() % uint32(len(s.processors)))
 			}
-			s.processors[idx].inChan <- &rpcClient{c, msg}
+			s.processors[idx].inChan <- &rpcClient{conn: c, msg: msg}
 		} else {
 			// 直接处理
 			s.handler(c, msg)
 		}
-		return gnet.None
 	}
+}
+
+func (s *Server) makeRpcContext(c gnet.Conn, msg *RpcRequestMessage) (ctx *RpcContext) {
+	ctx = &RpcContext{
+		Req:  msg,
+		Conn: c,
+	}
+	serviceInfo, ok := s.services[msg.ServiceName]
+	if ok {
+		ctx.SrvImpl = serviceInfo.serviceImpl
+		md, ok := serviceInfo.methods[msg.MethodName]
+		if ok {
+			ctx.Method = md.Handler
+		}
+	}
+	return
 }
 
 func (s *Server) Run() {
@@ -224,7 +271,7 @@ func (p *rpcProcessor) run(done <-chan struct{}) {
 			return
 		case v, ok := <-p.inChan:
 			if ok {
-				p.server.handler(v.cli, v.msg)
+				p.server.handler(v.conn, v.msg)
 			}
 		}
 	}

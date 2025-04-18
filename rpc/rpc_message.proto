@@ -4,14 +4,15 @@ option go_package = "./rpc";
 // in rpc_message.proto path: protoc --go_out=paths=source_relative:. rpc_message.proto
 
 message RpcRequestMessage {
-    int64 target = 1; // 玩家id或者服务id，或者为空
+    uint32 seq = 1;
     string serviceName = 2;
     string methodName = 3;
     bytes payload = 4;
-    
 }
 
 message RpcResponseMessage {
-    bytes payload = 4;
-    string error = 5;
+    uint32 seq = 1;
+    bytes payload = 2;
+    string error = 3;
+    int32 ecode = 4;
 }
