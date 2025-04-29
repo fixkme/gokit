@@ -38,7 +38,7 @@ func GetTimeZoneOffset() int64 {
 	return timezoneOffset
 }
 
-// SetTimeOffset 设置时间偏移量
+// SetTimeOffset 设置时间偏移量，debug下修改时间
 func SetTimeOffset(newOffset time.Duration) {
 	timeOffset = newOffset
 }
