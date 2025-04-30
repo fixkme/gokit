@@ -10,10 +10,10 @@ var (
 	UpdateTimer  func(id int64, when int64) (ok bool, err error)
 )
 
-func Start(done <-chan struct{}) {
+func Start(quit <-chan struct{}) {
 	onec.Do(func() {
 		builtinClock = NewClock()
-		builtinClock.Start(done)
+		builtinClock.Start(quit)
 		NewTimer = builtinClock.NewTimer
 		CancelTimer = builtinClock.CancelTimer
 		UpdateTimer = builtinClock.UpdateTimer

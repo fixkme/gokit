@@ -3,6 +3,7 @@ package timer
 import (
 	"errors"
 	"fmt"
+	"sync/atomic"
 	"time"
 )
 
@@ -36,7 +37,7 @@ type Clock struct {
 	slot     [_TIME_WHEEL_LEVEL]int64
 	tw       [_TIME_WHEEL_LEVEL]timeWheel
 	taskch   chan func()
-	closed   bool
+	closed   atomic.Bool
 	locs     map[int64]map[int64]*_Timer //记录位置
 }
 
@@ -48,13 +49,14 @@ func NewClock() *Clock {
 		c.slot[i] = 0
 		c.tw[i] = make(timeWheel, _LEVEL_SLOTS[i])
 	}
+	c.closed.Store(false)
 	return c
 }
 
 type timeWheel []map[int64]*_Timer
 
-func (c *Clock) Start(done <-chan struct{}) {
-	go c.run(done)
+func (c *Clock) Start(quit <-chan struct{}) {
+	go c.run(quit)
 }
 
 func (c *Clock) NewTimer(when int64, data any, receiver chan<- *Promise, batch chan<- []*Promise) (id int64, err error) {
@@ -206,7 +208,7 @@ func (c *Clock) tick(nowMs, tkTime int64) {
 	}
 }
 
-func (c *Clock) run(done <-chan struct{}) {
+func (c *Clock) run(quit <-chan struct{}) {
 	tickTimeSpan := time.Millisecond * _SI
 	tickTimer := time.NewTimer(tickTimeSpan)
 	nowMs := time.Now().UnixMilli()
@@ -214,8 +216,12 @@ func (c *Clock) run(done <-chan struct{}) {
 	var tk int64
 	for {
 		select {
-		case <-done:
-			c.closed = true
+		case <-quit:
+			c.closed.Store(true)
+			close(c.taskch)
+			for fn := range c.taskch {
+				fn()
+			}
 			return
 		case tm := <-tickTimer.C:
 			nowMs = tm.UnixMilli()
@@ -234,12 +240,12 @@ func (c *Clock) run(done <-chan struct{}) {
 }
 
 func (c *Clock) pushTask(f func()) (err error) {
-	errch := make(chan error, 1)
+	if c.closed.Load() {
+		return errors.New("clock is closed")
+	}
+	done := make(chan struct{}, 1)
 	ff := func() {
-		if c.closed {
-			errch <- errors.New("clock task chan closed")
-		}
-		defer close(errch)
+		defer close(done)
 		f()
 	}
 	select {
@@ -248,6 +254,6 @@ func (c *Clock) pushTask(f func()) (err error) {
 		err = errors.New("pushTask falied timer task channel full")
 		return
 	}
-	err = <-errch
+	<-done
 	return
 }
