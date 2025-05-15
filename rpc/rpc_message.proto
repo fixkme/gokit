@@ -3,16 +3,27 @@ option go_package = "./rpc";
 
 // in rpc_message.proto path: protoc --go_out=paths=source_relative:. rpc_message.proto
 
+message MetaValues {
+    repeated int64 ints = 1;
+    repeated string strs = 2;
+}
+
+message Meta {
+    map<string, MetaValues> kvs = 1;
+}
+
 message RpcRequestMessage {
     uint32 seq = 1;
     string serviceName = 2;
     string methodName = 3;
-    bytes payload = 4;
+    Meta md = 4;
+    bytes payload = 5;
 }
 
 message RpcResponseMessage {
     uint32 seq = 1;
-    bytes payload = 2;
+    int32 ecode = 2;
     string error = 3;
-    int32 ecode = 4;
+    Meta md = 4;
+    bytes payload = 5;
 }

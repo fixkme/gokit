@@ -3,7 +3,6 @@ package rpc
 import (
 	"context"
 	"encoding/binary"
-	"errors"
 	"fmt"
 	"log"
 	"reflect"
@@ -14,7 +13,7 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-type MethodHandler func(srv any, ctx context.Context, in []byte) (proto.Message, error)
+type MethodHandler func(srv any, ctx context.Context, dec func(in proto.Message) error) (proto.Message, error)
 
 type MethodDesc struct {
 	MethodName string
@@ -34,9 +33,9 @@ type RpcContext struct {
 	Method  MethodHandler
 }
 
-type RpcHandler func(*RpcContext, RpcSerializer)
+type RpcHandler func(*RpcContext, ServerSerializer)
 
-type RpcSerializer func(*RpcContext, proto.Message, error)
+type ServerSerializer func(*RpcContext, proto.Message, error)
 
 type Dispatcher func(gnet.Conn, *RpcRequestMessage, int) int
 
@@ -51,8 +50,10 @@ type Server struct {
 
 type ServerOpt struct {
 	gnet.Options
-	Addr           string
-	ProcessorSize  int64
+	Addr              string
+	ProcessorSize     int64
+	ProcessorTaskSize int64
+
 	DispatcherFunc Dispatcher
 	HandlerFunc    RpcHandler
 }
@@ -64,17 +65,23 @@ func NewServer(opt *ServerOpt) *Server {
 		opt:      opt,
 	}
 	if opt.HandlerFunc == nil {
-		opt.HandlerFunc = func(rc *RpcContext, ser RpcSerializer) {
-			reply, err := rc.Method(rc.SrvImpl, context.Background(), rc.Req.Payload)
+		opt.HandlerFunc = func(rc *RpcContext, ser ServerSerializer) {
+			dec := func(in proto.Message) error {
+				return proto.Unmarshal(rc.Req.Payload, in)
+			}
+			reply, err := rc.Method(rc.SrvImpl, context.Background(), dec)
 			ser(rc, reply, err)
 		}
 	}
 	if opt.ProcessorSize > 0 {
+		if opt.ProcessorTaskSize <= 0 {
+			opt.ProcessorTaskSize = 1024
+		}
 		// 异步模式
 		for i := 0; i < int(opt.ProcessorSize); i++ {
 			s.processors = append(s.processors, &rpcProcessor{
 				server: s,
-				inChan: make(chan *rpcClient, 1024),
+				inChan: make(chan *rpcTask, opt.ProcessorTaskSize),
 			})
 		}
 	}
@@ -86,7 +93,7 @@ type serviceInfo struct {
 	methods     map[string]*MethodDesc
 }
 
-type rpcClient struct {
+type rpcTask struct {
 	conn gnet.Conn
 	msg  *RpcRequestMessage
 }
@@ -128,12 +135,6 @@ func (s *Server) handler(c gnet.Conn, msg *RpcRequestMessage) {
 	ctx := new(RpcContext)
 	ctx.Conn = c
 	ctx.Req = msg
-	defer func() {
-		if err := recover(); err != nil {
-			log.Printf("handler rpc msg panic,%s, stack:%v\n", msg.String(), err)
-			s.serializeResponse(ctx, nil, errors.New("handler rpc msg panic"))
-		}
-	}()
 
 	var md *MethodDesc
 	serviceInfo, ok := s.services[msg.ServiceName]
@@ -173,7 +174,7 @@ func (s *Server) serializeResponse(ctx *RpcContext, reply proto.Message, err err
 	}
 
 	c := ctx.Conn
-	outBuf, err := proto.Marshal(rsp)
+	outBuf, err := defaultMarshaler.Marshal(rsp)
 	if err != nil {
 		log.Printf("handler rpc msg proto.Marshal err:%v\n", err)
 		return
@@ -211,7 +212,7 @@ func (s *Server) OnTraffic(c gnet.Conn) (r gnet.Action) {
 		}
 		// 反序列化
 		msg := &RpcRequestMessage{}
-		if err = proto.Unmarshal(packetBuf, msg); err != nil {
+		if err = defaultUnmarshaler.Unmarshal(packetBuf, msg); err != nil {
 			log.Printf("proto.Unmarshal RpcRequestMessage err:%v\n", err)
 			return gnet.None
 		}
@@ -226,7 +227,7 @@ func (s *Server) OnTraffic(c gnet.Conn) (r gnet.Action) {
 				h.Write([]byte(c.RemoteAddr().String()))
 				idx = int(h.Sum32() % uint32(len(s.processors)))
 			}
-			s.processors[idx].inChan <- &rpcClient{conn: c, msg: msg}
+			s.processors[idx].inChan <- &rpcTask{conn: c, msg: msg}
 		} else {
 			// 直接处理
 			s.handler(c, msg)
@@ -261,7 +262,7 @@ func (s *Server) Run() {
 
 type rpcProcessor struct {
 	server *Server
-	inChan chan *rpcClient
+	inChan chan *rpcTask
 }
 
 func (p *rpcProcessor) run(done <-chan struct{}) {
