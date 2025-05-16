@@ -65,7 +65,7 @@ func (h *clientHander) OnTraffic(c gnet.Conn) (action gnet.Action) {
 		if err != nil {
 			return
 		}
-		dataLen := binary.BigEndian.Uint32(lenBuf)
+		dataLen := binary.LittleEndian.Uint32(lenBuf)
 		msgBuf := make([]byte, dataLen)
 		_, err = c.Read(msgBuf)
 		if err != nil {

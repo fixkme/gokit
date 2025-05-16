@@ -70,7 +70,7 @@ func call(c gnet.Conn, path string, data proto.Message) {
 		return
 	}
 	lenBuf := make([]byte, 4)
-	binary.BigEndian.PutUint32(lenBuf, uint32(len(buf)))
+	binary.LittleEndian.PutUint32(lenBuf, uint32(len(buf)))
 	if _, err = c.Write(lenBuf); err != nil {
 		log.Printf("Failed to Write lenBuf: %v\n", err)
 		return

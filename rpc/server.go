@@ -27,17 +27,21 @@ type ServiceDesc struct {
 }
 
 type RpcContext struct {
-	Req     *RpcRequestMessage
 	Conn    gnet.Conn
+	Req     *RpcRequestMessage
 	SrvImpl any
 	Method  MethodHandler
+
+	Reply    proto.Message
+	ReplyErr error
+	ReplyMd  *Meta
 }
 
 type RpcHandler func(*RpcContext, ServerSerializer)
 
-type ServerSerializer func(*RpcContext, proto.Message, error)
+type ServerSerializer func(rc *RpcContext, sync bool)
 
-type Dispatcher func(gnet.Conn, *RpcRequestMessage, int) int
+type DispatchHash func(gnet.Conn, *RpcRequestMessage) int
 
 type Server struct {
 	gnet.BuiltinEventEngine
@@ -54,8 +58,9 @@ type ServerOpt struct {
 	ProcessorSize     int64
 	ProcessorTaskSize int64
 
-	DispatcherFunc Dispatcher
+	DispatcherFunc DispatchHash
 	HandlerFunc    RpcHandler
+	Interceptor    ServerInterceptor
 }
 
 func NewServer(opt *ServerOpt) *Server {
@@ -69,8 +74,9 @@ func NewServer(opt *ServerOpt) *Server {
 			dec := func(in proto.Message) error {
 				return proto.Unmarshal(rc.Req.Payload, in)
 			}
-			reply, err := rc.Method(rc.SrvImpl, context.Background(), dec)
-			ser(rc, reply, err)
+			rc.Reply, rc.ReplyErr = rc.Method(rc.SrvImpl, context.Background(), dec)
+			ser(rc, len(s.processors) == 0)
+			// 或者投递给另一个actor线程 ...
 		}
 	}
 	if opt.ProcessorSize > 0 {
@@ -132,80 +138,92 @@ func (s *Server) register(sd *ServiceDesc, ss any) {
 
 func (s *Server) handler(c gnet.Conn, msg *RpcRequestMessage) {
 	log.Printf("%d start handler rpc msg:%s\n", GoroutineID(), msg.String())
-	ctx := new(RpcContext)
-	ctx.Conn = c
-	ctx.Req = msg
+	rc := new(RpcContext)
+	rc.Conn = c
+	rc.Req = msg
 
 	var md *MethodDesc
 	serviceInfo, ok := s.services[msg.ServiceName]
 	if ok {
 		md, ok = serviceInfo.methods[msg.MethodName]
 		if !ok {
-			err := fmt.Errorf("not found method:%s", msg.MethodName)
-			s.serializeResponse(ctx, nil, err)
+			rc.ReplyErr = fmt.Errorf("not found method:%s", msg.MethodName)
+			s.serializeResponse(rc, len(s.processors) == 0)
 			return
 		}
 	} else {
-		err := fmt.Errorf("not found service:%s", msg.ServiceName)
-		s.serializeResponse(ctx, nil, err)
+		rc.ReplyErr = fmt.Errorf("not found service:%s", msg.ServiceName)
+		s.serializeResponse(rc, len(s.processors) == 0)
 		return
 	}
 
-	ctx.SrvImpl = serviceInfo.serviceImpl
-	ctx.Method = md.Handler
+	rc.SrvImpl = serviceInfo.serviceImpl
+	rc.Method = md.Handler
 
 	// handler msg
-	s.opt.HandlerFunc(ctx, s.serializeResponse)
+	s.opt.HandlerFunc(rc, s.serializeResponse)
 	log.Printf("%d succeed handler rpc msg:%s\n", GoroutineID(), msg.String())
 }
 
-func (s *Server) serializeResponse(ctx *RpcContext, reply proto.Message, err error) {
+func (s *Server) serializeResponse(rc *RpcContext, sync bool) {
 	rsp := new(RpcResponseMessage)
-	rsp.Seq = ctx.Req.Seq
-	if err == nil {
-		rspData, err := proto.Marshal(reply)
+	rsp.Seq = rc.Req.Seq
+	if rc.ReplyErr == nil {
+		rspData, err := proto.Marshal(rc.Reply)
 		if err == nil {
 			rsp.Payload = rspData
 		} else {
 			rsp.Error = err.Error()
 		}
 	} else {
-		rsp.Error = err.Error()
+		rsp.Error = rc.ReplyErr.Error()
 	}
 
-	c := ctx.Conn
-	outBuf, err := defaultMarshaler.Marshal(rsp)
+	// 反序列化rpc rsp
+	sz := defaultMarshaler.Size(rsp)
+	buf := make([]byte, msgLenSize+sz)
+	data, err := defaultMarshaler.MarshalAppend(buf[msgLenSize:msgLenSize], rsp)
 	if err != nil {
-		log.Printf("handler rpc msg proto.Marshal err:%v\n", err)
+		log.Printf("serializeResponse MarshalAppend wrong\n")
 		return
 	}
-	lenBuf := make([]byte, 4)
-	binary.BigEndian.PutUint32(lenBuf, uint32(len(outBuf)))
-	if _, err := c.Write(lenBuf); err != nil {
-		log.Printf("handler rpc msg Write lenBuf err:%v\n", err)
-		return
-	}
-	if _, err := c.Write(outBuf); err != nil {
-		log.Printf("handler rpc msg Write outBuf err:%v\n", err)
+	if len(data) == len(buf[msgLenSize:]) {
+		binary.LittleEndian.PutUint32(buf[:msgLenSize], uint32(len(data)))
+		if !sync { //处于异步
+			err = rc.Conn.AsyncWrite(buf, func(_ gnet.Conn, cerr error) error {
+				if cerr != nil {
+					log.Printf("AsyncWrite err:%v\n", err)
+				}
+				return nil
+			})
+		} else {
+			_, err = rc.Conn.Write(buf)
+		}
+		if err != nil {
+			log.Printf("serializeResponse Write wrong\n")
+			return
+		}
+	} else {
+		log.Printf("serializeResponse size wrong\n")
 		return
 	}
 }
 
+const msgLenSize = 4 //32bits uint32
 func (s *Server) OnTraffic(c gnet.Conn) (r gnet.Action) {
-	const lengthSize = 4 //32bits uint32
 	for {
 		log.Printf("%d server read cli buffer surplus size:%d", GoroutineID(), c.InboundBuffered())
-		lenBuf, err := c.Peek(lengthSize)
+		lenBuf, err := c.Peek(msgLenSize)
 		if err != nil {
 			return gnet.None
 		}
-		dataLen := int(binary.BigEndian.Uint32(lenBuf))
-		totalLen := lengthSize + dataLen
+		dataLen := int(binary.LittleEndian.Uint32(lenBuf))
+		totalLen := msgLenSize + dataLen
 		bufferLen := c.InboundBuffered()
 		if bufferLen < totalLen {
 			return gnet.None
 		}
-		c.Discard(lengthSize)
+		c.Discard(msgLenSize)
 		packetBuf, err := c.Next(dataLen)
 		if err != nil {
 			return gnet.None
@@ -221,7 +239,8 @@ func (s *Server) OnTraffic(c gnet.Conn) (r gnet.Action) {
 			// 分发消息
 			var idx int
 			if s.opt.DispatcherFunc != nil {
-				idx = s.opt.DispatcherFunc(c, msg, pn)
+				hashCode := s.opt.DispatcherFunc(c, msg)
+				idx = hashCode % pn
 			} else {
 				h := fnv.New32a()
 				h.Write([]byte(c.RemoteAddr().String()))
