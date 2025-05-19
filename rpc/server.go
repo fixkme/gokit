@@ -13,7 +13,7 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-type MethodHandler func(srv any, ctx context.Context, dec func(in proto.Message) error) (proto.Message, error)
+type MethodHandler func(srv any) (proto.Message, Handler)
 
 type MethodDesc struct {
 	MethodName string
@@ -60,7 +60,6 @@ type ServerOpt struct {
 
 	DispatcherFunc DispatchHash
 	HandlerFunc    RpcHandler
-	Interceptor    ServerInterceptor
 }
 
 func NewServer(opt *ServerOpt) *Server {
@@ -71,12 +70,14 @@ func NewServer(opt *ServerOpt) *Server {
 	}
 	if opt.HandlerFunc == nil {
 		opt.HandlerFunc = func(rc *RpcContext, ser ServerSerializer) {
-			dec := func(in proto.Message) error {
-				return proto.Unmarshal(rc.Req.Payload, in)
+			argMsg, handler := rc.Method(rc.SrvImpl)
+			if err := proto.Unmarshal(rc.Req.Payload, argMsg); err != nil {
+				rc.ReplyErr = err
+			} else {
+				rc.Reply, rc.ReplyErr = handler(context.Background(), argMsg)
 			}
-			rc.Reply, rc.ReplyErr = rc.Method(rc.SrvImpl, context.Background(), dec)
 			ser(rc, len(s.processors) == 0)
-			// 或者投递给另一个actor线程 ...
+			// 或者投递给另一个actor协程 ...
 		}
 	}
 	if opt.ProcessorSize > 0 {
