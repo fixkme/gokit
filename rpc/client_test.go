@@ -18,7 +18,7 @@ func TestClient(t *testing.T) {
 }
 
 func testf() {
-	h := &clientHander{}
+	h := &ClientHander{}
 	cs, err := gnet.NewClient(h, gnet.WithMulticore(true))
 	if err != nil {
 		log.Fatalf("new client error: %v", err)

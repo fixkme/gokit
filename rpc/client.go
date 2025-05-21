@@ -4,7 +4,6 @@ import (
 	"encoding/binary"
 	"fmt"
 	"log"
-	"net"
 	"runtime"
 	"strings"
 	"time"
@@ -16,21 +15,17 @@ import (
 type Client struct {
 }
 
-type Conn struct {
-	net.TCPConn
+type ClientHander struct {
 }
 
-type clientHander struct {
-}
-
-func (h *clientHander) OnBoot(eng gnet.Engine) (action gnet.Action) {
+func (h *ClientHander) OnBoot(eng gnet.Engine) (action gnet.Action) {
 	log.Println("OnBoot")
 	return 0
 }
 
 // OnShutdown fires when the engine is being shut down, it is called right after
 // all event-loops and connections are closed.
-func (h *clientHander) OnShutdown(eng gnet.Engine) {
+func (h *ClientHander) OnShutdown(eng gnet.Engine) {
 	log.Println("OnShutdown")
 }
 
@@ -39,14 +34,14 @@ func (h *clientHander) OnShutdown(eng gnet.Engine) {
 // The Conn c has information about the connection such as its local and remote addresses.
 // The parameter out is the return value which is going to be sent back to the remote.
 // Sending large amounts of data back to the remote in OnOpen is usually not recommended.
-func (h *clientHander) OnOpen(c gnet.Conn) (out []byte, action gnet.Action) {
+func (h *ClientHander) OnOpen(c gnet.Conn) (out []byte, action gnet.Action) {
 	log.Println("OnOpen")
 	return nil, gnet.None
 }
 
 // OnClose fires when a connection has been closed.
 // The parameter err is the last known connection error.
-func (h *clientHander) OnClose(c gnet.Conn, err error) (action gnet.Action) {
+func (h *ClientHander) OnClose(c gnet.Conn, err error) (action gnet.Action) {
 	log.Println("OnClose")
 	return 0
 }
@@ -57,7 +52,7 @@ func (h *clientHander) OnClose(c gnet.Conn, err error) (action gnet.Action) {
 // as this []byte will be reused within event-loop after OnTraffic() returns.
 // If you have to use this []byte in a new goroutine, you should either make a copy of it or call Conn.Read([]byte)
 // to read data into your own []byte, then pass the new []byte to the new goroutine.
-func (h *clientHander) OnTraffic(c gnet.Conn) (action gnet.Action) {
+func (h *ClientHander) OnTraffic(c gnet.Conn) (action gnet.Action) {
 	log.Println("OnTraffic")
 	for {
 		lenBuf := make([]byte, 4)
@@ -83,7 +78,7 @@ func (h *clientHander) OnTraffic(c gnet.Conn) (action gnet.Action) {
 
 // OnTick fires immediately after the engine starts and will fire again
 // following the duration specified by the delay return value.
-func (h *clientHander) OnTick() (delay time.Duration, action gnet.Action) {
+func (h *ClientHander) OnTick() (delay time.Duration, action gnet.Action) {
 	log.Println("OnTick")
 	return 5 * time.Second, 0
 }
