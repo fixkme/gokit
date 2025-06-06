@@ -9,6 +9,7 @@ import (
 
 	"hash/fnv"
 
+	"github.com/fixkme/gokit/util/errs"
 	"github.com/panjf2000/gnet/v2"
 	"google.golang.org/protobuf/proto"
 )
@@ -169,7 +170,7 @@ func (s *Server) handler(c gnet.Conn, msg *RpcRequestMessage) {
 func (s *Server) serializeResponse(rc *RpcContext, sync bool) {
 	rsp := new(RpcResponseMessage)
 	rsp.Seq = rc.Req.Seq
-	if rc.ReplyErr == nil {
+	if rerr := rc.ReplyErr; rerr == nil {
 		rspData, err := proto.Marshal(rc.Reply)
 		if err == nil {
 			rsp.Payload = rspData
@@ -177,7 +178,12 @@ func (s *Server) serializeResponse(rc *RpcContext, sync bool) {
 			rsp.Error = err.Error()
 		}
 	} else {
-		rsp.Error = rc.ReplyErr.Error()
+		if cerr, ok := rerr.(errs.CodeError); ok {
+			rsp.Ecode = cerr.Code()
+			rsp.Error = cerr.Error()
+		} else {
+			rsp.Error = rerr.Error()
+		}
 	}
 
 	// 反序列化rpc rsp
