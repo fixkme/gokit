@@ -2,7 +2,6 @@ package rpc
 
 import (
 	"context"
-	"encoding/binary"
 	"errors"
 	"fmt"
 	"log"
@@ -12,22 +11,38 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/cloudwego/netpoll"
+	"github.com/cloudwego/netpoll/mux"
 	"github.com/fixkme/gokit/util/errs"
-	"github.com/panjf2000/gnet/v2"
 	"google.golang.org/protobuf/proto"
 )
 
-type Client struct {
-}
-
-type ConnState struct {
-	c        gnet.Conn
+type ClientConn struct {
+	conn     netpoll.Connection
+	wqueue   *mux.ShardQueue
 	genMsgId atomic.Uint32
 	waitRsps map[uint32]chan *callResult
 	mtx      sync.Mutex
 }
 
-func Invoke(cs *ConnState, ctx context.Context, path string, req, rsp proto.Message, opts ...*CallOption) error {
+func NewClientConn(network, address string, timeout time.Duration) (*ClientConn, error) {
+	conn, err := netpoll.DialConnection(network, address, timeout)
+	if err != nil {
+		return nil, err
+	}
+	cliConn := &ClientConn{
+		wqueue:   mux.NewShardQueue(128, conn),
+		waitRsps: make(map[uint32]chan *callResult),
+	}
+	conn.SetOnRequest(func(ctx context.Context, connection netpoll.Connection) error {
+		return onClientMsg(ctx, connection, cliConn)
+	})
+	conn.AddCloseCallback(onClientClose)
+	cliConn.conn = conn
+	return cliConn, nil
+}
+
+func (cs *ClientConn) Invoke(ctx context.Context, path string, req, rsp proto.Message, opts ...*CallOption) error {
 	var opt *CallOption
 	if len(opts) != 0 {
 		opt = opts[0]
@@ -44,7 +59,6 @@ func Invoke(cs *ConnState, ctx context.Context, path string, req, rsp proto.Mess
 	if err != nil {
 		return err
 	}
-
 	seq := cs.genMsgId.Add(1)
 	rpcReq := &RpcRequestMessage{
 		Seq:         seq,
@@ -53,15 +67,13 @@ func Invoke(cs *ConnState, ctx context.Context, path string, req, rsp proto.Mess
 		Md:          opt.Md,
 		Payload:     payload,
 	}
-	datas, err := proto.Marshal(rpcReq)
+	buffer, err := cs.encodeRpcReq(rpcReq)
 	if err != nil {
 		return err
 	}
-	lenBuf := make([]byte, 4)
-	binary.LittleEndian.PutUint32(lenBuf, uint32(len(datas)))
+	cs.AsyncWrite(buffer)
 	if !opt.Sync {
-		// TODO 异步发送，如果io协程里写入fd失败是无法知道的
-		return cs.c.AsyncWritev([][]byte{lenBuf, datas}, nil)
+		return nil
 	}
 
 	// 同步
@@ -75,21 +87,6 @@ func Invoke(cs *ConnState, ctx context.Context, path string, req, rsp proto.Mess
 		cs.mtx.Unlock()
 	}()
 
-	err = cs.c.AsyncWritev([][]byte{lenBuf, datas}, func(c gnet.Conn, serr error) error {
-		if serr != nil {
-			cs := c.Context().(*ConnState)
-			cs.mtx.Lock()
-			defer cs.mtx.Unlock()
-			rch, ok := cs.waitRsps[seq]
-			if ok {
-				rch <- &callResult{senderr: serr}
-			}
-		}
-		return nil
-	})
-	if err != nil {
-		return err
-	}
 	if opt.Timeout > 0 {
 		subctx, cancel := context.WithTimeout(ctx, opt.Timeout)
 		defer cancel()
@@ -116,10 +113,34 @@ func Invoke(cs *ConnState, ctx context.Context, path string, req, rsp proto.Mess
 		}
 		return cs.decodeRpcRsp(ret.rpcRsp, rsp)
 	}
-	return nil
 }
 
-func (c *ConnState) decodeRpcRsp(rpcRsp *RpcResponseMessage, out proto.Message) error {
+func (c *ClientConn) AsyncWrite(buffer *netpoll.LinkBuffer) {
+	c.wqueue.Add(func() (buf netpoll.Writer, isNil bool) {
+		return buffer, false
+	})
+}
+
+func (c *ClientConn) encodeRpcReq(rpcReq *RpcRequestMessage) (*netpoll.LinkBuffer, error) {
+	sz := defaultMarshaler.Size(rpcReq)
+	buffer := netpoll.NewLinkBuffer(msgLenSize + sz)
+	// 获取整个写入空间(长度头+消息体)
+	buf, err := buffer.Malloc(msgLenSize + sz)
+	if err != nil {
+		return nil, err
+	}
+	data, err := defaultMarshaler.MarshalAppend(buf[msgLenSize:msgLenSize], rpcReq)
+	if err != nil {
+		return nil, err
+	}
+	byteOrder.PutUint32(buf[:msgLenSize], uint32(len(data)))
+	if len(data) != len(buf[msgLenSize:]) {
+		return nil, errors.New("proto.MarshalAppend size is wrong")
+	}
+	return buffer, nil
+}
+
+func (c *ClientConn) decodeRpcRsp(rpcRsp *RpcResponseMessage, out proto.Message) error {
 	if rpcRsp.Error != "" {
 		if rpcRsp.Ecode != 0 {
 			return errs.CreateCodeError(rpcRsp.Ecode, rpcRsp.Error)
@@ -135,85 +156,45 @@ func (c *ConnState) decodeRpcRsp(rpcRsp *RpcResponseMessage, out proto.Message) 
 	return nil
 }
 
-type ClientHander struct {
+func onClientClose(conn netpoll.Connection) error {
+	log.Println("client is Closed")
+	return nil
 }
 
-func (h *ClientHander) OnBoot(eng gnet.Engine) (action gnet.Action) {
-	log.Println("OnBoot")
-	return 0
-}
-
-// OnShutdown fires when the engine is being shut down, it is called right after
-// all event-loops and connections are closed.
-func (h *ClientHander) OnShutdown(eng gnet.Engine) {
-	log.Println("OnShutdown")
-}
-
-// OnOpen fires when a new connection has been opened.
-//
-// The Conn c has information about the connection such as its local and remote addresses.
-// The parameter out is the return value which is going to be sent back to the remote.
-// Sending large amounts of data back to the remote in OnOpen is usually not recommended.
-func (h *ClientHander) OnOpen(c gnet.Conn) (out []byte, action gnet.Action) {
-	log.Println("OnOpen")
-	cs := &ConnState{
-		c:        c,
-		waitRsps: make(map[uint32]chan *callResult),
-	}
-	c.SetContext(cs)
-	return nil, gnet.None
-}
-
-// OnClose fires when a connection has been closed.
-// The parameter err is the last known connection error.
-func (h *ClientHander) OnClose(c gnet.Conn, err error) (action gnet.Action) {
-	log.Println("OnClose")
-	return 0
-}
-
-// OnTraffic fires when a socket receives data from the remote.
-//
-// Note that the []byte returned from Conn.Peek(int)/Conn.Next(int) is not allowed to be passed to a new goroutine,
-// as this []byte will be reused within event-loop after OnTraffic() returns.
-// If you have to use this []byte in a new goroutine, you should either make a copy of it or call Conn.Read([]byte)
-// to read data into your own []byte, then pass the new []byte to the new goroutine.
-func (h *ClientHander) OnTraffic(c gnet.Conn) (action gnet.Action) {
-	log.Println("OnTraffic")
+func onClientMsg(ctx context.Context, conn netpoll.Connection, cli *ClientConn) (err error) {
+	reader := conn.Reader()
+	log.Printf("%d client read buffer surplus size:%d", GoroutineID(), reader.Len())
 	for {
-		lenBuf := make([]byte, 4)
-		_, err := c.Read(lenBuf)
-		if err != nil {
+		lenBuf, _err := reader.Peek(msgLenSize)
+		if _err != nil {
+			return _err
+		}
+		dataLen := int(byteOrder.Uint32(lenBuf))
+		totalLen := msgLenSize + dataLen
+		if reader.Len() < totalLen {
 			return
 		}
-		dataLen := binary.LittleEndian.Uint32(lenBuf)
-		msgBuf := make([]byte, dataLen)
-		_, err = c.Read(msgBuf)
-		if err != nil {
+		if err = reader.Skip(msgLenSize); err != nil {
 			return
+		}
+		packetBuf, _err := reader.Next(dataLen)
+		if _err != nil {
+			return _err
 		}
 		// 反序列化
 		msg := &RpcResponseMessage{}
-		if err = proto.Unmarshal(msgBuf, msg); err != nil {
-			return
+		if err = defaultUnmarshaler.Unmarshal(packetBuf, msg); err != nil {
+			log.Printf("proto.Unmarshal RpcRequestMessage err:%v\n", err)
+			return err
 		}
 
-		fmt.Printf("rpc rsp:%v\n", msg)
-
-		cs := c.Context().(*ConnState)
-		cs.mtx.Lock()
-		rch, ok := cs.waitRsps[msg.Seq]
-		cs.mtx.Unlock()
+		cli.mtx.Lock()
+		rch, ok := cli.waitRsps[msg.Seq]
+		cli.mtx.Unlock()
 		if ok {
 			rch <- &callResult{rpcRsp: msg}
 		}
 	}
-}
-
-// OnTick fires immediately after the engine starts and will fire again
-// following the duration specified by the delay return value.
-func (h *ClientHander) OnTick() (delay time.Duration, action gnet.Action) {
-	log.Println("OnTick")
-	return 5 * time.Second, 0
 }
 
 func GoroutineID() int {

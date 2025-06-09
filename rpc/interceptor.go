@@ -7,14 +7,20 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-type Invoker func(ctx context.Context, method string, req, reply proto.Message, cc *Connection, opts ...CallOption) error
+//type Invoker func(ctx context.Context, method string, req, reply proto.Message, cc *Connection, opts ...CallOption) error
 
-type ClientInterceptor func(ctx context.Context, method string, req, reply proto.Message, cc *Connection, invoker Invoker, opts ...CallOption) error
+// type ClientInterceptor func(ctx context.Context, method string, req, reply proto.Message, cc *Connection, invoker Invoker, opts ...CallOption) error
 
 type CallOption struct {
 	Sync    bool //同步调用
 	Timeout time.Duration
 	Md      *Meta
+}
+
+type callResult struct {
+	sendok  bool
+	senderr error
+	rpcRsp  *RpcResponseMessage
 }
 
 type Handler func(ctx context.Context, req proto.Message) (proto.Message, error)

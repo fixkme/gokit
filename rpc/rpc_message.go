@@ -1,8 +1,12 @@
 package rpc
 
 import (
+	"encoding/binary"
+
 	"google.golang.org/protobuf/proto"
 )
+
+var byteOrder binary.ByteOrder = binary.LittleEndian
 
 // rpc消息的全局解码器，客户端、服务端共用
 var defaultUnmarshaler = proto.UnmarshalOptions{

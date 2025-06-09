@@ -4,6 +4,7 @@ go 1.22.12
 
 require (
 	github.com/armon/go-radix v1.0.0
+	github.com/cloudwego/netpoll v0.7.0
 	github.com/google/uuid v1.6.0
 	github.com/panjf2000/gnet/v2 v2.7.2
 	github.com/redis/go-redis/v9 v9.7.3
@@ -14,7 +15,9 @@ require (
 )
 
 require (
+	github.com/bytedance/gopkg v0.1.1 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
+	github.com/cloudwego/gopkg v0.1.4 // indirect
 	github.com/coreos/go-semver v0.3.0 // indirect
 	github.com/coreos/go-systemd/v22 v22.3.2 // indirect
 	github.com/dgryski/go-rendezvous v0.0.0-20200823014737-9f7001d12a5f // indirect

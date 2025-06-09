@@ -2,15 +2,15 @@ package rpc
 
 import (
 	"context"
-	"encoding/binary"
 	"fmt"
 	"log"
 	"reflect"
 
 	"hash/fnv"
 
+	"github.com/cloudwego/netpoll"
+	"github.com/cloudwego/netpoll/mux"
 	"github.com/fixkme/gokit/util/errs"
-	"github.com/panjf2000/gnet/v2"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -27,8 +27,13 @@ type ServiceDesc struct {
 	Methods     []MethodDesc
 }
 
+type serviceInfo struct {
+	serviceImpl any
+	methods     map[string]*MethodDesc
+}
+
 type RpcContext struct {
-	Conn    gnet.Conn
+	Conn    *SvrMuxConn
 	Req     *RpcRequestMessage
 	SrvImpl any
 	Method  MethodHandler
@@ -42,11 +47,11 @@ type RpcHandler func(*RpcContext, ServerSerializer)
 
 type ServerSerializer func(rc *RpcContext, sync bool)
 
-type DispatchHash func(gnet.Conn, *RpcRequestMessage) int
+type DispatchHash func(netpoll.Connection, *RpcRequestMessage) int
 
 type Server struct {
-	gnet.BuiltinEventEngine
-	gnet.Engine
+	evloop netpoll.EventLoop
+
 	services   map[string]*serviceInfo // service name -> service info
 	processors []*rpcProcessor
 	done       chan struct{}
@@ -54,7 +59,8 @@ type Server struct {
 }
 
 type ServerOpt struct {
-	gnet.Options
+	PollerNum         int
+	PollOpts          []netpoll.Option
 	Addr              string
 	ProcessorSize     int64
 	ProcessorTaskSize int64
@@ -92,17 +98,53 @@ func NewServer(opt *ServerOpt) *Server {
 				inChan: make(chan *rpcTask, opt.ProcessorTaskSize),
 			})
 		}
+		if opt.DispatcherFunc == nil {
+			// 异步模式下，负载均衡只能是hash，因为rpc是单个Conn负责多个不同session的消息
+			// 默认对连接conn进行hash分发，实际上应该根据每个消息的session id分发，比如玩家id
+			opt.DispatcherFunc = func(c netpoll.Connection, msg *RpcRequestMessage) int {
+				h := fnv.New32a()
+				h.Write([]byte(c.RemoteAddr().String()))
+				return int(h.Sum32())
+			}
+		}
 	}
 	return s
 }
 
-type serviceInfo struct {
-	serviceImpl any
-	methods     map[string]*MethodDesc
+func (s *Server) Run() {
+	pollConfig := netpoll.Config{
+		PollerNum: s.opt.PollerNum,
+	}
+	if err := netpoll.Configure(pollConfig); err != nil {
+		panic(err)
+	}
+
+	listener, err := netpoll.CreateListener("tcp", s.opt.Addr)
+	if err != nil {
+		panic(err)
+	}
+	if s.opt.PollOpts == nil {
+		s.opt.PollOpts = []netpoll.Option{}
+	}
+	s.opt.PollOpts = append(s.opt.PollOpts, netpoll.WithOnPrepare(prepare))
+	eventLoop, err := netpoll.NewEventLoop(
+		s.onMsg,
+		s.opt.PollOpts...,
+	)
+	if err != nil {
+		panic(err)
+	}
+	s.evloop = eventLoop
+
+	for i := 0; i < len(s.processors); i++ {
+		go s.processors[i].run(s.done)
+	}
+
+	eventLoop.Serve(listener)
 }
 
 type rpcTask struct {
-	conn gnet.Conn
+	conn *SvrMuxConn
 	msg  *RpcRequestMessage
 }
 
@@ -138,10 +180,10 @@ func (s *Server) register(sd *ServiceDesc, ss any) {
 	s.services[sd.ServiceName] = info
 }
 
-func (s *Server) handler(c gnet.Conn, msg *RpcRequestMessage) {
+func (s *Server) handler(mc *SvrMuxConn, msg *RpcRequestMessage) {
 	log.Printf("%d start handler rpc msg:%s\n", GoroutineID(), msg.String())
 	rc := new(RpcContext)
-	rc.Conn = c
+	rc.Conn = mc
 	rc.Req = msg
 
 	var md *MethodDesc
@@ -188,58 +230,70 @@ func (s *Server) serializeResponse(rc *RpcContext, sync bool) {
 
 	// 反序列化rpc rsp
 	sz := defaultMarshaler.Size(rsp)
-	buf := make([]byte, msgLenSize+sz)
-	data, err := defaultMarshaler.MarshalAppend(buf[msgLenSize:msgLenSize], rsp)
+	buffer := netpoll.NewLinkBuffer(msgLenSize + sz)
+	// 获取整个写入空间(长度头+消息体)
+	buf, err := buffer.Malloc(msgLenSize + sz)
 	if err != nil {
-		log.Printf("serializeResponse MarshalAppend wrong\n")
+		log.Printf("buffer.Malloc err:%v\n", err)
 		return
 	}
+	data, err := defaultMarshaler.MarshalAppend(buf[msgLenSize:msgLenSize], rsp)
+	if err != nil {
+		log.Printf("proto.MarshalAppend err:%v\n", err)
+		return
+	}
+	byteOrder.PutUint32(buf[:msgLenSize], uint32(len(data)))
 	if len(data) == len(buf[msgLenSize:]) {
-		binary.LittleEndian.PutUint32(buf[:msgLenSize], uint32(len(data)))
 		if !sync { //处于异步
-			err = rc.Conn.AsyncWrite(buf, func(_ gnet.Conn, cerr error) error {
-				if cerr != nil {
-					log.Printf("AsyncWrite err:%v\n", err)
-				}
-				return nil
+			rc.Conn.Put(func() (netpoll.Writer, bool) {
+				return buffer, false
 			})
 		} else {
-			_, err = rc.Conn.Write(buf)
-		}
-		if err != nil {
-			log.Printf("serializeResponse Write wrong\n")
-			return
+			_, err = rc.Conn.c.Write(buffer.Bytes())
+			if err != nil {
+				log.Printf("proto.MarshalAppend err:%v\n", err)
+				return
+			}
 		}
 	} else {
-		log.Printf("serializeResponse size wrong\n")
+		log.Printf("serializeResponse size wrong %d, %d\n", len(data), len(buf[msgLenSize:]))
 		return
 	}
 }
 
 const msgLenSize = 4 //32bits uint32
-func (s *Server) OnTraffic(c gnet.Conn) (r gnet.Action) {
+
+func (s *Server) onMsg(ctx context.Context, c netpoll.Connection) (err error) {
+	defer func() {
+		if err != nil {
+			log.Printf("server read cli msg err:%v\n", err)
+		}
+	}()
+	mc := ctx.Value(ctxkey).(*SvrMuxConn)
+	reader := c.Reader()
+	fmt.Printf("%d server read cli buffer surplus size:%d", GoroutineID(), reader.Len())
 	for {
-		log.Printf("%d server read cli buffer surplus size:%d", GoroutineID(), c.InboundBuffered())
-		lenBuf, err := c.Peek(msgLenSize)
-		if err != nil {
-			return gnet.None
+		lenBuf, _err := reader.Peek(msgLenSize)
+		if _err != nil {
+			return _err
 		}
-		dataLen := int(binary.LittleEndian.Uint32(lenBuf))
+		dataLen := int(byteOrder.Uint32(lenBuf))
 		totalLen := msgLenSize + dataLen
-		bufferLen := c.InboundBuffered()
-		if bufferLen < totalLen {
-			return gnet.None
+		if reader.Len() < totalLen {
+			return
 		}
-		c.Discard(msgLenSize)
-		packetBuf, err := c.Next(dataLen)
-		if err != nil {
-			return gnet.None
+		if err = reader.Skip(msgLenSize); err != nil {
+			return
+		}
+		packetBuf, _err := reader.Next(dataLen)
+		if _err != nil {
+			return _err
 		}
 		// 反序列化
 		msg := &RpcRequestMessage{}
 		if err = defaultUnmarshaler.Unmarshal(packetBuf, msg); err != nil {
 			log.Printf("proto.Unmarshal RpcRequestMessage err:%v\n", err)
-			return gnet.None
+			return err
 		}
 
 		if pn := len(s.processors); pn > 0 {
@@ -253,18 +307,18 @@ func (s *Server) OnTraffic(c gnet.Conn) (r gnet.Action) {
 				h.Write([]byte(c.RemoteAddr().String()))
 				idx = int(h.Sum32() % uint32(len(s.processors)))
 			}
-			s.processors[idx].inChan <- &rpcTask{conn: c, msg: msg}
+			s.processors[idx].inChan <- &rpcTask{conn: mc, msg: msg}
 		} else {
 			// 直接处理
-			s.handler(c, msg)
+			s.handler(mc, msg)
 		}
 	}
 }
 
-func (s *Server) makeRpcContext(c gnet.Conn, msg *RpcRequestMessage) (ctx *RpcContext) {
+func (s *Server) makeRpcContext(mc *SvrMuxConn, msg *RpcRequestMessage) (ctx *RpcContext) {
 	ctx = &RpcContext{
 		Req:  msg,
-		Conn: c,
+		Conn: mc,
 	}
 	serviceInfo, ok := s.services[msg.ServiceName]
 	if ok {
@@ -275,15 +329,6 @@ func (s *Server) makeRpcContext(c gnet.Conn, msg *RpcRequestMessage) (ctx *RpcCo
 		}
 	}
 	return
-}
-
-func (s *Server) Run() {
-	for i := 0; i < len(s.processors); i++ {
-		go s.processors[i].run(s.done)
-	}
-	if err := gnet.Run(s, s.opt.Addr, gnet.WithOptions(s.opt.Options)); err != nil {
-		log.Fatalf("Server Run with error: %v", err)
-	}
 }
 
 type rpcProcessor struct {
@@ -302,4 +347,28 @@ func (p *rpcProcessor) run(done <-chan struct{}) {
 			}
 		}
 	}
+}
+
+var ctxkey struct{}
+
+func prepare(conn netpoll.Connection) context.Context {
+	mc := newSvrMuxConn(conn)
+	ctx := context.WithValue(context.Background(), ctxkey, mc)
+	return ctx
+}
+
+func newSvrMuxConn(conn netpoll.Connection) *SvrMuxConn {
+	mc := &SvrMuxConn{}
+	mc.c = conn
+	mc.wqueue = mux.NewShardQueue(mux.ShardSize, conn)
+	return mc
+}
+
+type SvrMuxConn struct {
+	c      netpoll.Connection
+	wqueue *mux.ShardQueue // use for async write
+}
+
+func (c *SvrMuxConn) Put(gt mux.WriterGetter) {
+	c.wqueue.Add(gt)
 }
