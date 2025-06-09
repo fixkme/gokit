@@ -16,7 +16,8 @@ func TestServer(t *testing.T) {
 		Addr:             "tcp://127.0.0.1:2333",
 		HandshakeTimeout: time.Second,
 	}
-	server := NewServer(opt, NewRouterPool(4, 100))
+	quit := make(chan struct{})
+	server := NewServer(opt, NewRouterPool(4, 100, quit))
 	server.Run()
 }
 

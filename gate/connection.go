@@ -18,10 +18,10 @@ type Conn struct {
 	wsHead    *WsHead
 
 	cli    *WsClient
-	router Router
+	router RoutingWorker
 }
 
-func (conn *Conn) BindRouter(r Router) {
+func (conn *Conn) BindRouter(r RoutingWorker) {
 	conn.router = r
 }
 

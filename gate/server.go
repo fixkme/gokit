@@ -25,17 +25,16 @@ type ServerOptions struct {
 type Server struct {
 	gnet.BuiltinEventEngine
 	gnet.Engine
-	opt   *ServerOptions
-	rpool RouterPool
+	opt *ServerOptions
+	rlb LoadBalance
 }
 
-func NewServer(opt *ServerOptions, rpool RouterPool) *Server {
-	return &Server{opt: opt, rpool: rpool}
+func NewServer(opt *ServerOptions, rlb LoadBalance) *Server {
+	return &Server{opt: opt, rlb: rlb}
 }
 
 func (s *Server) Run() {
-	quit := make(chan struct{})
-	s.rpool.Start(quit)
+	s.rlb.Start()
 	if err := gnet.Run(s, s.opt.Addr, gnet.WithOptions(s.opt.Options)); err != nil {
 		log.Fatalf("Server Run with error: %v", err)
 	}
@@ -88,7 +87,7 @@ func (s *Server) OnTraffic(c gnet.Conn) (r gnet.Action) {
 		conn.upgraded = true
 		conn.buff = nil
 		// 握手成功回调
-		if err := s.rpool.OnHandshake(conn, req); err != nil {
+		if err := s.rlb.OnHandshake(conn, req); err != nil {
 			return gnet.Close
 		}
 		return

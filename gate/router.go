@@ -5,21 +5,21 @@ import (
 	"net/http"
 )
 
-type RouteTask struct {
+type RoutingTask struct {
 	Cli   *WsClient
 	Datas []byte
 }
 
-type Router interface {
+type RoutingWorker interface {
 	Run(quit chan struct{})
 	PushData(cli *WsClient, datas []byte)
 }
 
-type RouterImp struct {
-	tasks chan *RouteTask
+type RoutingWorkerImp struct {
+	tasks chan *RoutingTask
 }
 
-func (r *RouterImp) DoTask(task *RouteTask) {
+func (r *RoutingWorkerImp) DoTask(task *RoutingTask) {
 	// 反序列化数据
 	fmt.Printf("rout data %d:%v\n", len(task.Datas), string(task.Datas))
 	conn := task.Cli.conn
@@ -29,14 +29,14 @@ func (r *RouterImp) DoTask(task *RouteTask) {
 
 }
 
-func (r *RouterImp) PushData(cli *WsClient, datas []byte) {
-	r.tasks <- &RouteTask{
+func (r *RoutingWorkerImp) PushData(cli *WsClient, datas []byte) {
+	r.tasks <- &RoutingTask{
 		Cli:   cli,
 		Datas: datas,
 	}
 }
 
-func (r *RouterImp) Run(quit chan struct{}) {
+func (r *RoutingWorkerImp) Run(quit chan struct{}) {
 	for {
 		select {
 		case <-quit:
@@ -47,42 +47,44 @@ func (r *RouterImp) Run(quit chan struct{}) {
 	}
 }
 
-type RouterPool interface {
-	Start(quit chan struct{})
+type LoadBalance interface {
+	Start()
 	OnHandshake(conn *Conn, req *http.Request) error
 }
 
-type RouterPoolImp struct {
+type LoadBalanceImp struct {
 	workerSize int
 	taskSize   int
-	workers    []Router
+	workers    []RoutingWorker
+	quit       chan struct{}
 }
 
-func NewRouterPool(workerSize, taskSize int) *RouterPoolImp {
-	p := &RouterPoolImp{
+func NewRouterPool(workerSize, taskSize int, quit chan struct{}) *LoadBalanceImp {
+	p := &LoadBalanceImp{
 		workerSize: workerSize,
 		taskSize:   taskSize,
+		quit:       quit,
 	}
 	return p
 }
 
-func (p *RouterPoolImp) Start(quit chan struct{}) {
-	p.workers = make([]Router, p.workerSize)
+func (p *LoadBalanceImp) Start() {
+	p.workers = make([]RoutingWorker, p.workerSize)
 	for i := 0; i < p.workerSize; i++ {
-		worker := &RouterImp{
-			tasks: make(chan *RouteTask, p.taskSize),
+		worker := &RoutingWorkerImp{
+			tasks: make(chan *RoutingTask, p.taskSize),
 		}
 		p.workers[i] = worker
-		go worker.Run(quit)
+		go worker.Run(p.quit)
 	}
 }
 
-func (p *RouterPoolImp) GetOne(cli *WsClient) Router {
+func (p *LoadBalanceImp) GetOne(cli *WsClient) RoutingWorker {
 	idx := int(cli.PlayerId) % p.workerSize
 	return p.workers[idx]
 }
 
-func (p *RouterPoolImp) OnHandshake(conn *Conn, req *http.Request) error {
+func (p *LoadBalanceImp) OnHandshake(conn *Conn, req *http.Request) error {
 	cli := &WsClient{
 		conn:     conn,
 		Account:  req.Header.Get("x-account"),
