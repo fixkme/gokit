@@ -19,6 +19,7 @@ func TestServer(t *testing.T) {
 	opt := &ServerOptions{
 		Addr: "tcp://127.0.0.1:2333",
 	}
+	opt.NumEventLoop = 4
 	quit := make(chan struct{})
 	server := NewServer(opt, newRouterPool(8, 1024, quit))
 	server.Run()
