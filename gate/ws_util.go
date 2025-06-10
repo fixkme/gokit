@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"strconv"
 	"sync"
+
+	"github.com/panjf2000/gnet/v2/pkg/pool/byteslice"
 )
 
 const (
@@ -126,7 +128,8 @@ func MaskWsPayload(mask [4]byte, payload []byte) {
 }
 
 func MakeWsHeadBuff(h *WsHead) (buff []byte, err error) {
-	bts := make([]byte, MaxWsHeaderSize)
+	bts := byteslice.Get(MaxWsHeaderSize)
+	//bts := make([]byte, MaxWsHeaderSize)
 	if h.Fin {
 		bts[0] |= 0x80
 	}
@@ -176,8 +179,16 @@ func ReplyWsError(w io.Writer, statusCode uint16, reason error) (err error) {
 	if reason != nil {
 		reasonDesc = reason.Error()
 	}
-	h := &WsHead{Fin: true, OpCode: OpClose, Length: int64(2 + len(reasonDesc))}
-	hbuff, _ := MakeWsHeadBuff(h)
+	wsh := wsHeadPool.Get()
+	wsh.Fin = true
+	wsh.OpCode = OpClose
+	wsh.Length = int64(2 + len(reasonDesc))
+	hbuff, _ := MakeWsHeadBuff(wsh)
+	defer func() {
+		wsHeadPool.Put(wsh)
+		byteslice.Put(hbuff)
+	}()
+
 	if _, err = w.Write(hbuff); err != nil {
 		return
 	}
@@ -200,7 +211,7 @@ func ReplyHttpError(w io.Writer, r *http.Request, status int, reason string) {
 	p = append(p, "Content-Type: text/plain; charset=utf-8\r\n"...)
 	p = append(p, "Connection: close\r\n\r\n"...)
 	p = append(p, reason...)
-	fmt.Printf("ReplyHttpError cap %d, len: %d", cap(p), len(p))
+	fmt.Printf("ReplyHttpError cap %d, len: %d, %v\n", cap(p), len(p), string(p))
 	w.Write(p)
 }
 

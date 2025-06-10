@@ -298,15 +298,8 @@ func (s *Server) onMsg(ctx context.Context, c netpoll.Connection) (err error) {
 
 		if pn := len(s.processors); pn > 0 {
 			// 分发消息
-			var idx int
-			if s.opt.DispatcherFunc != nil {
-				hashCode := s.opt.DispatcherFunc(c, msg)
-				idx = hashCode % pn
-			} else {
-				h := fnv.New32a()
-				h.Write([]byte(c.RemoteAddr().String()))
-				idx = int(h.Sum32() % uint32(len(s.processors)))
-			}
+			hashCode := s.opt.DispatcherFunc(c, msg)
+			idx := hashCode % pn
 			s.processors[idx].inChan <- &rpcTask{conn: mc, msg: msg}
 		} else {
 			// 直接处理

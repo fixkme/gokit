@@ -5,8 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 
 	"github.com/panjf2000/gnet/v2"
+	"github.com/panjf2000/gnet/v2/pkg/pool/byteslice"
 )
 
 type Conn struct {
@@ -17,16 +19,16 @@ type Conn struct {
 	wsHeadLen int
 	wsHead    *WsHead
 
-	cli    *WsClient
-	router RoutingWorker
+	session any
+	router  RoutingWorker
 }
 
-func (conn *Conn) BindRouter(r RoutingWorker) {
+func (conn *Conn) BindRoutingWorker(r RoutingWorker) {
 	conn.router = r
 }
 
-func (conn *Conn) BindClient(cli *WsClient) {
-	conn.cli = cli
+func (conn *Conn) BindSession(session any) {
+	conn.session = session
 }
 
 func (conn *Conn) ReadWsHeader(c gnet.Conn) (headOk bool, err error) {
@@ -117,7 +119,14 @@ func (conn *Conn) Send(content []byte) (err error) {
 	if err != nil {
 		return err
 	}
-	err = conn.c.AsyncWritev([][]byte{hbuff, content}, nil)
+	err = conn.c.AsyncWritev([][]byte{hbuff, content}, func(c gnet.Conn, err error) error {
+		if err == nil {
+			byteslice.Put(hbuff)
+		} else {
+			log.Printf("ws AsyncWritev error: %v\n", err)
+		}
+		return nil
+	})
 	return
 }
 
@@ -127,13 +136,17 @@ func (conn *Conn) innerSendWsOpFrame(op byte, payload []byte) (err error) {
 	wsh.OpCode = op
 	wsh.Length = int64(len(payload))
 	hbuff, _ := MakeWsHeadBuff(wsh)
-	defer wsHeadPool.Put(wsh)
+	defer func() {
+		wsHeadPool.Put(wsh)
+		byteslice.Put(hbuff)
+	}()
 
-	if _, err = conn.c.Write(hbuff); err != nil {
-		return
-	}
-	if len(payload) > 0 {
-		if _, err = conn.c.Write(payload); err != nil {
+	if len(payload) == 0 {
+		if _, err = conn.c.Write(hbuff); err != nil {
+			return
+		}
+	} else {
+		if _, err = conn.c.Writev([][]byte{hbuff, payload}); err != nil {
 			return
 		}
 	}

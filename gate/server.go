@@ -9,17 +9,15 @@ import (
 	"log"
 	"math"
 	"net/http"
-	"time"
 
 	"github.com/panjf2000/gnet/v2"
 )
 
 type ServerOptions struct {
 	gnet.Options
-	Addr             string //"tcp://127.0.0.1:2333"
-	HandshakeTimeout time.Duration
-	FragmentSize     int
-	OnClientClose    func(conn *Conn, err error)
+	Addr          string //"tcp://127.0.0.1:2333"
+	Upgrader      *Upgrader
+	OnClientClose func(conn *Conn, err error)
 }
 
 type Server struct {
@@ -30,6 +28,11 @@ type Server struct {
 }
 
 func NewServer(opt *ServerOptions, rlb LoadBalance) *Server {
+	if opt.Upgrader == nil {
+		opt.Upgrader = &Upgrader{
+			CheckOrigin: func(r *http.Request) bool { return true },
+		}
+	}
 	return &Server{opt: opt, rlb: rlb}
 }
 
@@ -41,6 +44,7 @@ func (s *Server) Run() {
 }
 
 func (s *Server) OnOpen(c gnet.Conn) (out []byte, action gnet.Action) {
+	log.Printf("%s connection opened", c.RemoteAddr().String())
 	conn := &Conn{c: c}
 	c.SetContext(conn)
 	return
@@ -80,8 +84,7 @@ func (s *Server) OnTraffic(c gnet.Conn) (r gnet.Action) {
 			return gnet.Close
 		}
 
-		upgrader := Upgrader{HandshakeTimeout: time.Second}
-		if err := upgrader.Upgrade(conn, req, nil); err != nil {
+		if err := s.opt.Upgrader.Upgrade(conn, req, nil); err != nil {
 			return gnet.Close
 		}
 		conn.upgraded = true
@@ -98,7 +101,7 @@ func (s *Server) OnTraffic(c gnet.Conn) (r gnet.Action) {
 	var payload []byte
 	defer func() {
 		if err != nil && err != io.ErrShortBuffer {
-			fmt.Println("err:", err)
+			log.Printf("read ws msg err:%v\n", err)
 			if wsh = conn.wsHead; wsh != nil {
 				conn.wsHead = nil
 				wsHeadPool.Put(wsh)
@@ -160,7 +163,7 @@ func (s *Server) OnTraffic(c gnet.Conn) (r gnet.Action) {
 			conn.buff = append(conn.buff, payload...)
 			if wsh.Fin {
 				// 交给task处理
-				conn.router.PushData(conn.cli, conn.buff[:])
+				conn.router.PushData(conn.session, conn.buff[:])
 				conn.buff = nil
 			}
 		}
