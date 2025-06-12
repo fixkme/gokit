@@ -1,4 +1,4 @@
-package gate
+package wsg
 
 import (
 	"encoding/binary"
@@ -185,48 +185,3 @@ func (conn *Conn) processOpFrame(wsh *WsHead, payload []byte) (err error) {
 	}
 	return
 }
-
-var (
-	errBadWriteOpCode      = errors.New("websocket: bad write message type")
-	errWriteClosed         = errors.New("websocket: write closed")
-	errInvalidControlFrame = errors.New("websocket: invalid control frame")
-)
-
-// type GnetResponseWriter struct {
-// 	conn    gnet.Conn
-// 	header  http.Header
-// 	status  int
-// 	written bool
-// }
-
-// func (w *GnetResponseWriter) Header() http.Header {
-// 	if w.header == nil {
-// 		w.header = make(http.Header)
-// 	}
-// 	return w.header
-// }
-
-// func (w *GnetResponseWriter) WriteHeader(statusCode int) {
-// 	if w.written {
-// 		return
-// 	}
-// 	w.status = statusCode
-// 	w.written = true
-
-// 	var buf bytes.Buffer
-// 	buf.WriteString(fmt.Sprintf("HTTP/1.1 %d %s\r\n", statusCode, http.StatusText(statusCode)))
-// 	for k, vv := range w.header {
-// 		for _, v := range vv {
-// 			buf.WriteString(fmt.Sprintf("%s: %s\r\n", k, v))
-// 		}
-// 	}
-// 	buf.WriteString("\r\n")
-// 	w.conn.Write(buf.Bytes())
-// }
-
-// func (w *GnetResponseWriter) Write(data []byte) (int, error) {
-// 	if !w.written {
-// 		w.WriteHeader(http.StatusOK)
-// 	}
-// 	return w.conn.Write(data)
-// }

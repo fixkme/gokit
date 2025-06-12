@@ -1,4 +1,4 @@
-package gate
+package wsg
 
 import (
 	"compress/flate"

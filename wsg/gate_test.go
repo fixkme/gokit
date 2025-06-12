@@ -1,4 +1,4 @@
-package gate
+package wsg
 
 import (
 	"crypto/rand"
@@ -16,14 +16,21 @@ import (
 )
 
 func TestServer(t *testing.T) {
+	routerPool = newRouterPool(8, 1024, make(chan struct{}))
+	routerPool.Start()
+
 	opt := &ServerOptions{
 		Addr: "tcp://127.0.0.1:2333",
+		OnHandshake: func(conn *Conn, r *http.Request) error {
+			return routerPool.OnHandshake(conn, r)
+		},
 	}
 	opt.NumEventLoop = 4
-	quit := make(chan struct{})
-	server := NewServer(opt, newRouterPool(8, 1024, quit))
+	server := NewServer(opt)
 	server.Run()
 }
+
+var routerPool *_LoadBalanceImp
 
 func TestWsClient(t *testing.T) {
 	cliNum := 20
@@ -185,6 +192,8 @@ func (p *_LoadBalanceImp) GetOne(cli *_WsClient) RoutingWorker {
 }
 
 func (p *_LoadBalanceImp) OnHandshake(conn *Conn, req *http.Request) error {
+	// fmt.Printf("URL: %v\n", req.URL.String())
+	// fmt.Printf("Header: %v\n", req.Header)
 	cli := &_WsClient{
 		conn:     conn,
 		Account:  req.Header.Get("x-account"),

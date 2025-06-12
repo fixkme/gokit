@@ -1,7 +1,8 @@
-package gate
+package wsg
 
 import (
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -9,6 +10,12 @@ import (
 	"sync"
 
 	"github.com/panjf2000/gnet/v2/pkg/pool/byteslice"
+)
+
+var (
+	errBadWriteOpCode      = errors.New("websocket: bad write message type")
+	errWriteClosed         = errors.New("websocket: write closed")
+	errInvalidControlFrame = errors.New("websocket: invalid control frame")
 )
 
 const (

@@ -1,4 +1,4 @@
-package gate
+package wsg
 
 import (
 	"bufio"
@@ -17,6 +17,7 @@ type ServerOptions struct {
 	gnet.Options
 	Addr          string //"tcp://127.0.0.1:2333"
 	Upgrader      *Upgrader
+	OnHandshake   func(conn *Conn, r *http.Request) error
 	OnClientClose func(conn *Conn, err error)
 }
 
@@ -24,23 +25,22 @@ type Server struct {
 	gnet.BuiltinEventEngine
 	gnet.Engine
 	opt *ServerOptions
-	rlb LoadBalance
 }
 
-func NewServer(opt *ServerOptions, rlb LoadBalance) *Server {
+func NewServer(opt *ServerOptions) *Server {
 	if opt.Upgrader == nil {
 		opt.Upgrader = &Upgrader{
 			CheckOrigin: func(r *http.Request) bool { return true },
 		}
 	}
-	return &Server{opt: opt, rlb: rlb}
+	return &Server{opt: opt}
 }
 
-func (s *Server) Run() {
-	s.rlb.Start()
+func (s *Server) Run() error {
 	if err := gnet.Run(s, s.opt.Addr, gnet.WithOptions(s.opt.Options)); err != nil {
-		log.Fatalf("Server Run with error: %v", err)
+		return err
 	}
+	return nil
 }
 
 func (s *Server) OnOpen(c gnet.Conn) (out []byte, action gnet.Action) {
@@ -90,8 +90,10 @@ func (s *Server) OnTraffic(c gnet.Conn) (r gnet.Action) {
 		conn.upgraded = true
 		conn.buff = nil
 		// 握手成功回调
-		if err := s.rlb.OnHandshake(conn, req); err != nil {
-			return gnet.Close
+		if cb := s.opt.OnHandshake; cb != nil {
+			if err := cb(conn, req); err != nil {
+				return gnet.Close
+			}
 		}
 		return
 	}
