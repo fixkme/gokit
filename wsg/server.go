@@ -15,10 +15,11 @@ import (
 
 type ServerOptions struct {
 	gnet.Options
-	Addr          string //"tcp://127.0.0.1:2333"
-	Upgrader      *Upgrader
-	OnHandshake   func(conn *Conn, r *http.Request) error
-	OnClientClose func(conn *Conn, err error)
+	Addr             string //"tcp://127.0.0.1:2333"
+	Upgrader         *Upgrader
+	OnHandshake      func(conn *Conn, r *http.Request) error
+	OnClientClose    func(conn *Conn, err error)
+	OnServerShutdown func(gnet.Engine)
 }
 
 type Server struct {
@@ -43,9 +44,17 @@ func (s *Server) Run() error {
 	return nil
 }
 
+// 在gnet.Run协程里被调用
 func (s *Server) OnBoot(eng gnet.Engine) (action gnet.Action) {
 	s.Engine = eng
 	return
+}
+
+// 在gnet.Run协程里被调用
+func (s *Server) OnShutdown(eng gnet.Engine) {
+	if cb := s.opt.OnServerShutdown; cb != nil {
+		cb(eng)
+	}
 }
 
 func (s *Server) OnOpen(c gnet.Conn) (out []byte, action gnet.Action) {
