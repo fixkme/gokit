@@ -11,6 +11,7 @@ import (
 	"github.com/cloudwego/netpoll"
 	"github.com/cloudwego/netpoll/mux"
 	"github.com/fixkme/gokit/util/errs"
+	g "github.com/fixkme/gokit/util/go"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -181,7 +182,7 @@ func (s *Server) register(sd *ServiceDesc, ss any) {
 }
 
 func (s *Server) handler(mc *SvrMuxConn, msg *RpcRequestMessage) {
-	log.Printf("%d start handler rpc msg:%s\n", GoroutineID(), msg.String())
+	log.Printf("%d start handler rpc msg:%s\n", g.GoroutineID(), msg.String())
 	rc := new(RpcContext)
 	rc.Conn = mc
 	rc.Req = msg
@@ -206,7 +207,7 @@ func (s *Server) handler(mc *SvrMuxConn, msg *RpcRequestMessage) {
 
 	// handler msg
 	s.opt.HandlerFunc(rc, s.serializeResponse)
-	log.Printf("%d succeed handler rpc msg:%s\n", GoroutineID(), msg.String())
+	log.Printf("%d succeed handler rpc msg:%s\n", g.GoroutineID(), msg.String())
 }
 
 func (s *Server) serializeResponse(rc *RpcContext, sync bool) {
@@ -271,7 +272,7 @@ func (s *Server) onMsg(ctx context.Context, c netpoll.Connection) (err error) {
 	}()
 	mc := ctx.Value(ctxkey).(*SvrMuxConn)
 	reader := c.Reader()
-	fmt.Printf("%d server read cli buffer surplus size:%d", GoroutineID(), reader.Len())
+	fmt.Printf("%d server read cli buffer surplus size:%d", g.GoroutineID(), reader.Len())
 	for {
 		lenBuf, _err := reader.Peek(msgLenSize)
 		if _err != nil {

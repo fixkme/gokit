@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"runtime"
 	"strings"
 	sync "sync"
 	"sync/atomic"
@@ -14,6 +13,7 @@ import (
 	"github.com/cloudwego/netpoll"
 	"github.com/cloudwego/netpoll/mux"
 	"github.com/fixkme/gokit/util/errs"
+	g "github.com/fixkme/gokit/util/go"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -163,7 +163,7 @@ func onClientClose(conn netpoll.Connection) error {
 
 func onClientMsg(ctx context.Context, conn netpoll.Connection, cli *ClientConn) (err error) {
 	reader := conn.Reader()
-	log.Printf("%d client read buffer surplus size:%d", GoroutineID(), reader.Len())
+	log.Printf("%d client read buffer surplus size:%d", g.GoroutineID(), reader.Len())
 	for {
 		lenBuf, _err := reader.Peek(msgLenSize)
 		if _err != nil {
@@ -195,13 +195,4 @@ func onClientMsg(ctx context.Context, conn netpoll.Connection, cli *ClientConn) 
 			rch <- &callResult{rpcRsp: msg}
 		}
 	}
-}
-
-func GoroutineID() int {
-	var buf [64]byte
-	n := runtime.Stack(buf[:], false) // 获取当前 goroutine 的调用栈
-	idField := strings.Fields(strings.TrimPrefix(string(buf[:n]), "goroutine "))[0]
-	id := 0
-	fmt.Sscanf(idField, "%d", &id)
-	return id
 }
