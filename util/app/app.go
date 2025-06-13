@@ -1,12 +1,10 @@
 package app
 
 import (
-	"fmt"
 	"log"
 	"os"
 	"os/signal"
 	"reflect"
-	"sync"
 	"sync/atomic"
 	"syscall"
 )
@@ -23,17 +21,15 @@ const (
 var defaultApp = new(App)
 
 type Module interface {
-	OnInit() error          // 初始化
-	OnDestroy()             // 销毁
-	Run(closeSig chan bool) // 启动
-	Name() string           // 名字
+	OnInit() error // 初始化
+	OnDestroy()    // 销毁
+	Run()          // 启动
+	Name() string  // 名字
 }
 
 // mod 模块
 type mod struct {
-	mi       Module
-	closeSig chan bool
-	wg       sync.WaitGroup
+	mi Module
 }
 
 // DefaultApp 默认单例
@@ -44,9 +40,8 @@ func DefaultApp() *App {
 // App 中的 modules 在初始化(通过 Start 或 Run) 之后不能变更
 // App API 只有 Get 和 Stats 是 goroutine safe 的
 type App struct {
-	mods      []*mod
-	state     int32
-	multiMods sync.Map
+	mods  []*mod
+	state int32
 }
 
 // SetState 设置状态
@@ -60,7 +55,7 @@ func (app *App) GetState() int32 {
 }
 
 // Start 初始化app
-func (app *App) Start(mods ...Module) {
+func (app *App) start(mods ...Module) {
 	// 单个app不能启动两次
 	if app.GetState() != AppStateNone {
 		log.Fatal("app mods cannot start twice")
@@ -76,8 +71,6 @@ func (app *App) Start(mods ...Module) {
 	for _, mi := range mods {
 		m := new(mod)
 		m.mi = mi
-		m.closeSig = make(chan bool)
-		app.mods = append(app.mods, m)
 	}
 	app.setState(AppStateInit)
 	// 模块初始化
@@ -89,38 +82,35 @@ func (app *App) Start(mods ...Module) {
 	}
 	// 模块启动
 	for _, m := range app.mods {
-		m.wg.Add(1)
 		go run(m)
 	}
 	app.setState(AppStateRun)
+	log.Println("app started")
 }
 
-func (app *App) Stop() {
+func (app *App) stop() {
 	if app.GetState() == AppStateStop {
 		return
 	}
-	log.Println("coreApp stop begin")
-
+	log.Println("app stop begin")
 	app.setState(AppStateStop)
 	// 先进后出
 	for i := len(app.mods) - 1; i >= 0; i-- {
 		m := app.mods[i]
-		close(m.closeSig)
-		m.wg.Wait()
 		destroy(m)
 	}
 	app.setState(AppStateNone)
+	log.Println("app stoped")
 }
 
 func run(m *mod) {
-	defer m.wg.Done()
-	m.mi.Run(m.closeSig)
+	m.mi.Run()
 }
 
 func destroy(m *mod) {
 	defer func() {
 		if r := recover(); r != nil {
-			fmt.Println("module destroy panic: ", r)
+			log.Println("module destroy panic: ", r)
 		}
 	}()
 
@@ -128,7 +118,7 @@ func destroy(m *mod) {
 }
 
 func (app *App) Run(mods ...Module) {
-	app.Start(mods...)
+	app.start(mods...)
 	c := make(chan os.Signal, 1)
 	for {
 		signal.Notify(c, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
@@ -139,5 +129,5 @@ func (app *App) Run(mods ...Module) {
 		}
 	}
 
-	app.Stop()
+	app.stop()
 }
