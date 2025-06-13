@@ -27,7 +27,16 @@ func TestServer(t *testing.T) {
 	}
 	opt.NumEventLoop = 4
 	server := NewServer(opt)
-	server.Run()
+
+	go server.Run()
+
+	select {
+	// case <-time.After(time.Second * 10):
+	// 	if err := server.Stop(context.Background()); err != nil {
+	// 		t.Fatal(err)
+	// 	}
+	}
+
 }
 
 var routerPool *_LoadBalanceImp
@@ -71,7 +80,7 @@ func client(id int) {
 			break
 		}
 		fmt.Println(id, "echo:", string(readWsReply(conn)))
-		ms := mrand.Intn(100) + 1
+		ms := mrand.Intn(1000) + 1
 		time.Sleep(time.Millisecond * time.Duration(ms))
 	}
 }

@@ -23,8 +23,8 @@ type ServerOptions struct {
 
 type Server struct {
 	gnet.BuiltinEventEngine
-	gnet.Engine
-	opt *ServerOptions
+	gnet.Engine // use for stop
+	opt         *ServerOptions
 }
 
 func NewServer(opt *ServerOptions) *Server {
@@ -41,6 +41,11 @@ func (s *Server) Run() error {
 		return err
 	}
 	return nil
+}
+
+func (s *Server) OnBoot(eng gnet.Engine) (action gnet.Action) {
+	s.Engine = eng
+	return
 }
 
 func (s *Server) OnOpen(c gnet.Conn) (out []byte, action gnet.Action) {
