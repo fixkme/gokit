@@ -8,10 +8,12 @@ import (
 	"math/rand"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/fixkme/gokit/log"
 	sd "github.com/fixkme/gokit/servicediscovery/discovery"
+	v3rpc "go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
 
 	"github.com/google/uuid"
 	clientv3 "go.etcd.io/etcd/client/v3"
@@ -28,26 +30,13 @@ const (
 )
 
 type EtcdOpt struct {
-	Endpoints            []string `json:"endpoints"`
-	DialTimeout          int64    `json:"dialTimeout"`
-	DialKeepAliveTime    int64    `json:"dialKeepAliveTime"`
-	DialKeepAliveTimeout int64    `json:"dialKeepAliveTimeout"`
-	AutoSyncInterval     int64    `json:"autoSyncInterval"`
-	LeaseTTL             int64    `json:"leaseTTL"`
-	ServiceGroup         string   `json:"serviceGroup"`
+	clientv3.Config
+	LeaseTTL int64 `json:"leaseTTL"`
 }
 
 // NewEtcdDiscovery 创建一个etcd实例
-func NewEtcdDiscovery(ctx context.Context, opt *EtcdOpt) (sd.Discovery, error) {
-	cli, err := clientv3.New(clientv3.Config{
-		Endpoints: opt.Endpoints,
-		// 注意，设置了DialTimeout参数，clientv3.New会是阻塞call(如果需要非阻塞call，则不能设置DailTimeout参数)
-		// 详见 https://github.com/etcd-io/etcd/issues/9829#issuecomment-438434795
-		DialTimeout:          time.Duration(opt.DialTimeout) * time.Second,
-		DialKeepAliveTime:    time.Duration(opt.DialKeepAliveTime) * time.Second,
-		DialKeepAliveTimeout: time.Duration(opt.DialKeepAliveTimeout) * time.Second,
-		AutoSyncInterval:     time.Duration(opt.AutoSyncInterval) * time.Second,
-	})
+func NewEtcdDiscovery(ctx context.Context, serviceGroup string, opt *EtcdOpt) (sd.Discovery, error) {
+	cli, err := clientv3.New(opt.Config)
 	if err != nil {
 		return nil, err
 	}
@@ -57,23 +46,23 @@ func NewEtcdDiscovery(ctx context.Context, opt *EtcdOpt) (sd.Discovery, error) {
 	}
 
 	// 监视"service:"前缀的key，此类key变动时，将通知到rch管道
-	prefix := fmt.Sprintf("%s:service:", opt.ServiceGroup)
-	// 类似于etcdctl watch的效果，etcd client和server维持监视效果
-	// server中有相关的key变动，立即通知到client driver，然后将数据发送到rch管道
-	rch := cli.Watch(ctx, prefix, clientv3.WithPrefix())
-	if rch == nil {
-		return nil, fmt.Errorf("watch etcd %v error", opt.Endpoints)
-	}
+	prefix := fmt.Sprintf("%s:service:", serviceGroup)
 
-	return &etcdImp{
+	e := &etcdImp{
 		cli:         cli,
 		prefix:      prefix,
 		allServices: make(serviceContainer),
 		regServs:    make(map[string]string),
-		rch:         rch,
+		rch:         nil,
 		ctx:         ctx,
 		leaseTTL:    opt.LeaseTTL,
-	}, nil
+	}
+
+	//加载所有服务， 然后监听后续数据
+	if err := e.loadAndWatch(); err != nil {
+		return nil, err
+	}
+	return e, nil
 }
 
 // serviceSet 一类服务集合，比如Resource服务
@@ -94,8 +83,10 @@ type etcdImp struct {
 	prefix string
 	// 本集群所有services cache
 	allServices serviceContainer
+
 	// 自己已注册的服务
 	regServs map[string]string
+	quit     atomic.Bool
 
 	mx  sync.RWMutex
 	ctx context.Context
@@ -108,12 +99,12 @@ type etcdImp struct {
 
 // Start Start the etcd client service
 func (e *etcdImp) Start() <-chan error {
+	e.quit.Store(false)
 	errChan := make(chan error, 10)
-	go e.loadExistedServices()
 	go func() {
 		defer func() {
 			if r := recover(); r != nil {
-				log.Error("etcd run recover error %v", r)
+				log.Error("etcd run panic error: %v", r)
 			}
 		}()
 		for {
@@ -129,9 +120,11 @@ func (e *etcdImp) Start() <-chan error {
 				}
 				if err := watchRsp.Err(); err != nil {
 					log.Warn("etcd watch response error: %v", err)
-					// TODO watch出错后，重新发起watch，并修改Etcd.rch
-					errChan <- err
-					return
+					if err = e.processWatchError(err); err != nil {
+						errChan <- err
+						return
+					}
+					continue
 				}
 				for _, evt := range watchRsp.Events {
 					if evt != nil {
@@ -150,7 +143,7 @@ func (e *etcdImp) Stop() {
 	if e.cli == nil {
 		return
 	}
-
+	e.quit.Store(true)
 	for k := range e.regServs {
 		if _, err := e.cli.Delete(e.ctx, k); err != nil {
 			log.Warn("etcd stop, Delete key error:%v", err)
@@ -275,7 +268,7 @@ func (e *etcdImp) onWatchEvent(evt *clientv3.Event) {
 			log.Info("etcd onWatchEvent delete (%s,%s)", name, id)
 		}
 		// 删除的是本节点服务，重新注册此服务（被删除的原因，可能是keepalive超时了）
-		if rpcAddr, ok := e.regServs[key]; ok {
+		if rpcAddr, ok := e.regServs[key]; ok && !e.quit.Load() {
 			log.Info("etcd OnWatchEvent register again, key:%s, rpcAddr:%s", key, rpcAddr)
 			if err := e.putServiceKey(key, rpcAddr); err != nil {
 				log.Error("etcd onWatchEvent putServiceKey err:%v", err)
@@ -340,15 +333,16 @@ func (e *etcdImp) delService(name string, id string) bool {
 }
 
 // 将已经注册于etcd的service缓存load进来
-func (e *etcdImp) loadExistedServices() {
-	rsp, err := e.cli.Get(e.ctx, e.prefix, clientv3.WithPrefix())
+func (e *etcdImp) loadExistedServices() (revision int64, err error) {
+	ctx, cancel := context.WithTimeout(e.ctx, 3*time.Second)
+	defer cancel()
+	rsp, err := e.cli.Get(ctx, e.prefix, clientv3.WithPrefix())
 	if err != nil {
-		log.Warn("cacheExistedServices Get error %v", err)
-		return
+		log.Error("cacheExistedServices GetRequest err: %v", err)
+		return 0, err
 	}
-
-	e.mx.Lock()
-	defer e.mx.Unlock()
+	revision = rsp.Header.Revision
+	log.Info("loadExistedServices GetResponse revision %v", revision)
 
 	var key, value string
 	for _, v := range rsp.Kvs {
@@ -366,4 +360,35 @@ func (e *etcdImp) loadExistedServices() {
 			}
 		}
 	}
+	return revision, nil
+}
+
+// 加载和监听
+func (e *etcdImp) loadAndWatch() error {
+	e.mx.Lock()
+	defer e.mx.Unlock()
+	e.allServices = make(serviceContainer)
+	revision, err := e.loadExistedServices()
+	if err != nil {
+		return err
+	}
+	rch := e.cli.Watch(e.ctx, e.prefix, clientv3.WithPrefix(), clientv3.WithRev(revision+1))
+	if rch == nil {
+		return err
+	}
+	e.rch = rch
+	return nil
+}
+
+// 处理监听事件的错误
+func (e *etcdImp) processWatchError(err error) error {
+	switch err {
+	case v3rpc.ErrCompacted:
+		if err = e.loadAndWatch(); err != nil {
+			return err
+		}
+	default:
+		return err
+	}
+	return nil
 }
