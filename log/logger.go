@@ -1,7 +1,9 @@
 package log
 
 import (
+	"context"
 	"fmt"
+	"sync"
 )
 
 type Logger interface {
@@ -13,6 +15,16 @@ var logger Logger
 
 func SetLogger(l Logger) {
 	logger = l
+}
+
+func UseDefaultLogger(ctx context.Context, wg *sync.WaitGroup, path string, level string) error {
+	l, err := newDefaultLogger(path, level)
+	if err != nil {
+		return err
+	}
+	l.Start(ctx, wg)
+	SetLogger(l)
+	return nil
 }
 
 func Debug(format string, a ...interface{}) {
