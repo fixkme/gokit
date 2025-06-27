@@ -5,8 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 
+	"github.com/fixkme/gokit/log"
 	"github.com/panjf2000/gnet/v2"
 	"github.com/panjf2000/gnet/v2/pkg/pool/byteslice"
 )
@@ -123,7 +123,7 @@ func (conn *Conn) Send(content []byte) (err error) {
 		if err == nil {
 			byteslice.Put(hbuff)
 		} else {
-			log.Printf("ws AsyncWritev error: %v\n", err)
+			log.Error("ws AsyncWritev error: %v", err)
 		}
 		return nil
 	})

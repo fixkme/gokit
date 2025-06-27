@@ -6,10 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"math"
 	"net/http"
 
+	"github.com/fixkme/gokit/log"
 	"github.com/panjf2000/gnet/v2"
 )
 
@@ -58,7 +58,7 @@ func (s *Server) OnShutdown(eng gnet.Engine) {
 }
 
 func (s *Server) OnOpen(c gnet.Conn) (out []byte, action gnet.Action) {
-	log.Printf("%s connection opened", c.RemoteAddr().String())
+	log.Info("%s connection opened", c.RemoteAddr().String())
 	conn := &Conn{c: c}
 	c.SetContext(conn)
 	return
@@ -79,7 +79,7 @@ func (s *Server) OnTraffic(c gnet.Conn) (r gnet.Action) {
 	if !conn.upgraded {
 		datas, err := c.Next(-1)
 		if err != nil && err != io.ErrShortBuffer {
-			log.Printf("conn.Next err:%v", err)
+			log.Error("conn.Next err:%v", err)
 			return gnet.Close
 		}
 		conn.buff = append(conn.buff, datas...)
@@ -117,7 +117,7 @@ func (s *Server) OnTraffic(c gnet.Conn) (r gnet.Action) {
 	var payload []byte
 	defer func() {
 		if err != nil && err != io.ErrShortBuffer {
-			log.Printf("read ws msg err:%v\n", err)
+			log.Error("read ws msg err:%v", err)
 			if wsh = conn.wsHead; wsh != nil {
 				conn.wsHead = nil
 				wsHeadPool.Put(wsh)

@@ -20,7 +20,7 @@ func TestServer(t *testing.T) {
 	routerPool.Start()
 
 	opt := &ServerOptions{
-		Addr: "tcp://127.0.0.1:2333",
+		Addr: "tcp://127.0.0.1:5000",
 		OnHandshake: func(conn *Conn, r *http.Request) error {
 			return routerPool.OnHandshake(conn, r)
 		},
@@ -51,7 +51,7 @@ func TestWsClient(t *testing.T) {
 }
 
 func client(id int) {
-	conn, err := net.Dial("tcp", "127.0.0.1:2333")
+	conn, err := net.Dial("tcp", "127.0.0.1:5000")
 	if err != nil {
 		panic(err)
 	}
