@@ -17,8 +17,8 @@ func SetLogger(l Logger) {
 	logger = l
 }
 
-func UseDefaultLogger(ctx context.Context, wg *sync.WaitGroup, path string, level string) error {
-	l, err := newDefaultLogger(path, level)
+func UseDefaultLogger(ctx context.Context, wg *sync.WaitGroup, path string, logName string, level string, stdOut bool) error {
+	l, err := newDefaultLogger(path, logName, level, stdOut)
 	if err != nil {
 		return err
 	}

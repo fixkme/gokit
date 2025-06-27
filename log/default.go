@@ -11,34 +11,21 @@ import (
 	"time"
 )
 
-//var mlog *loggerImp
-
-// func Info(format string, v ...interface{}) {
-// 	mlog.logFormat("[INFO] ", format, v...)
-// }
-
-// func Error(format string, v ...interface{}) {
-// 	mlog.logFormat("[ERROR] ", format, v...)
-// }
-
-// func Proto(format string, v ...interface{}) {
-// 	mlog.logFormat("[PROTO] ", format, v...)
-// }
-
 type loggerImp struct {
-	path  string
-	file  *os.File
-	ll    *log.Logger
-	buff  chan string
-	level int
+	path   string
+	file   *os.File
+	ll     *log.Logger
+	buff   chan string
+	level  int
+	stdOut bool
 }
 
-func newDefaultLogger(logpath string, level string) (*loggerImp, error) {
+func newDefaultLogger(logpath, logName string, level string, stdOut bool) (*loggerImp, error) {
 	// 默认使用当前路径
 	if len(logpath) == 0 {
 		logpath = "."
 	}
-	logname := filepath.Join(logpath, genLogName())
+	logname := filepath.Join(logpath, genLogName(logName))
 	logfile, err := openFile(logname)
 	if err != nil {
 		return nil, err
@@ -46,11 +33,12 @@ func newDefaultLogger(logpath string, level string) (*loggerImp, error) {
 	fileLogger := log.New(logfile, "", log.Ldate|log.Lmicroseconds)
 
 	mlog := &loggerImp{
-		path:  logpath,
-		ll:    fileLogger,
-		file:  logfile,
-		buff:  make(chan string, 0x10000),
-		level: getLevel(level),
+		path:   logpath,
+		ll:     fileLogger,
+		file:   logfile,
+		buff:   make(chan string, 0x10000),
+		level:  getLevel(level),
+		stdOut: stdOut,
 	}
 	return mlog, nil
 }
@@ -75,7 +63,9 @@ func (me *loggerImp) Start(ctx context.Context, wg *sync.WaitGroup) {
 			case <-ctx.Done():
 				return
 			case str := <-me.buff:
-				println(str)
+				if me.stdOut {
+					fmt.Println(str)
+				}
 				me.ll.Println(str)
 			case <-timer.C:
 
@@ -134,8 +124,11 @@ func getLevel(level string) (lv int) {
 	return lv
 }
 
-func genLogName() string {
-	return "mlog" + ".log"
+func genLogName(logName string) string {
+	if logName == "" {
+		logName = "mlog"
+	}
+	return logName + ".log"
 }
 
 const (
