@@ -4,11 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
 	"strings"
 	sync "sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/fixkme/gokit/log"
 
 	"github.com/cloudwego/netpoll"
 	"github.com/cloudwego/netpoll/mux"
@@ -25,19 +26,31 @@ type ClientConn struct {
 	mtx      sync.Mutex
 }
 
-func NewClientConn(network, address string, timeout time.Duration) (*ClientConn, error) {
-	conn, err := netpoll.DialConnection(network, address, timeout)
+type ClientOpt struct {
+	DailTimeout    time.Duration
+	ShardQueueSize int
+	OnClientClose  func(netpoll.Connection) error
+}
+
+func NewClientConn(network, address string, opt *ClientOpt) (*ClientConn, error) {
+	if opt.ShardQueueSize == 0 {
+		opt.ShardQueueSize = mux.ShardSize
+	}
+	if opt.OnClientClose == nil {
+		opt.OnClientClose = onClientClose
+	}
+	conn, err := netpoll.DialConnection(network, address, opt.DailTimeout)
 	if err != nil {
 		return nil, err
 	}
 	cliConn := &ClientConn{
-		wqueue:   mux.NewShardQueue(128, conn),
+		wqueue:   mux.NewShardQueue(opt.ShardQueueSize, conn),
 		waitRsps: make(map[uint32]chan *callResult),
 	}
 	conn.SetOnRequest(func(ctx context.Context, connection netpoll.Connection) error {
 		return onClientMsg(ctx, connection, cliConn)
 	})
-	conn.AddCloseCallback(onClientClose)
+	conn.AddCloseCallback(opt.OnClientClose)
 	cliConn.conn = conn
 	return cliConn, nil
 }
@@ -149,7 +162,7 @@ func (c *ClientConn) decodeRpcRsp(rpcRsp *RpcResponseMessage, out proto.Message)
 	}
 	if out != nil {
 		if err := proto.Unmarshal(rpcRsp.Payload, out); err != nil {
-			log.Printf("failed to unmarshal response: %v", err)
+			log.Error("failed to unmarshal response: %v", err)
 			return err
 		}
 	}
@@ -157,13 +170,13 @@ func (c *ClientConn) decodeRpcRsp(rpcRsp *RpcResponseMessage, out proto.Message)
 }
 
 func onClientClose(conn netpoll.Connection) error {
-	log.Println("client is Closed")
+	log.Info("%s client is Closed", conn.RemoteAddr().String())
 	return nil
 }
 
 func onClientMsg(ctx context.Context, conn netpoll.Connection, cli *ClientConn) (err error) {
 	reader := conn.Reader()
-	log.Printf("%d client read buffer surplus size:%d", g.GoroutineID(), reader.Len())
+	log.Info("%d client read buffer surplus size:%d", g.GoroutineID(), reader.Len())
 	for {
 		lenBuf, _err := reader.Peek(msgLenSize)
 		if _err != nil {
@@ -184,7 +197,7 @@ func onClientMsg(ctx context.Context, conn netpoll.Connection, cli *ClientConn) 
 		// 反序列化
 		msg := &RpcResponseMessage{}
 		if err = defaultUnmarshaler.Unmarshal(packetBuf, msg); err != nil {
-			log.Printf("proto.Unmarshal RpcRequestMessage err:%v\n", err)
+			log.Error("proto.Unmarshal RpcRequestMessage err:%v\n", err)
 			return err
 		}
 

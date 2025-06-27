@@ -42,14 +42,14 @@ type GRPCer interface {
 }
 
 // NewGRPCer 创建GRPC，参数为grpc监听地址，格式:ip:port
-func NewGRPCer(ctx context.Context, grpcAddr string, etcdConf *etcd.EtcdOpt) (GRPCer, error) {
+func NewGRPCer(ctx context.Context, grpcAddr string, serviceGroup string, etcdConf *etcd.EtcdOpt) (GRPCer, error) {
 	netListen, err := net.Listen("tcp", grpcAddr)
 	if err != nil {
 		return nil, err
 	}
 	log.Info("gRPC listen: %s", netListen.Addr())
 
-	etcds, err := etcd.NewEtcdDiscovery(ctx, etcdConf)
+	etcds, err := etcd.NewEtcdDiscovery(ctx, serviceGroup, etcdConf)
 	if err != nil {
 		return nil, err
 	}
@@ -73,7 +73,7 @@ func NewGRPCer(ctx context.Context, grpcAddr string, etcdConf *etcd.EtcdOpt) (GR
 	)
 
 	imp := &grpcerImp{
-		grpcGroup: etcdConf.ServiceGroup,
+		grpcGroup: serviceGroup,
 		grpcAddr:  grpcAddr,
 		netListen: netListen,
 		grpcServ:  grpcServ,

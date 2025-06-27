@@ -3,10 +3,11 @@ package rpc
 import (
 	"context"
 	"fmt"
-	"log"
+	"math/rand"
 	"reflect"
+	sync "sync"
 
-	"hash/fnv"
+	"github.com/fixkme/gokit/log"
 
 	"github.com/cloudwego/netpoll"
 	"github.com/cloudwego/netpoll/mux"
@@ -51,18 +52,20 @@ type ServerSerializer func(rc *RpcContext, sync bool)
 type DispatchHash func(netpoll.Connection, *RpcRequestMessage) int
 
 type Server struct {
-	evloop netpoll.EventLoop
+	opt      *ServerOpt
+	listener netpoll.Listener
+	evloop   netpoll.EventLoop
 
 	services   map[string]*serviceInfo // service name -> service info
 	processors []*rpcProcessor
-	done       chan struct{}
-	opt        *ServerOpt
+	quit       chan struct{}
+	wg         sync.WaitGroup
 }
 
 type ServerOpt struct {
+	ListenAddr        string
 	PollerNum         int
 	PollOpts          []netpoll.Option
-	Addr              string
 	ProcessorSize     int64
 	ProcessorTaskSize int64
 
@@ -70,12 +73,33 @@ type ServerOpt struct {
 	HandlerFunc    RpcHandler
 }
 
-func NewServer(opt *ServerOpt) *Server {
+func NewServer(opt *ServerOpt) (*Server, error) {
 	s := &Server{
 		services: make(map[string]*serviceInfo),
-		done:     make(chan struct{}),
+		quit:     make(chan struct{}),
 		opt:      opt,
 	}
+	pollConfig := netpoll.Config{
+		PollerNum: s.opt.PollerNum,
+	}
+	err := netpoll.Configure(pollConfig)
+	if err != nil {
+		return nil, err
+	}
+	s.listener, err = netpoll.CreateListener("tcp", s.opt.ListenAddr)
+	if err != nil {
+		return nil, err
+	}
+
+	if s.opt.PollOpts == nil {
+		s.opt.PollOpts = []netpoll.Option{}
+	}
+	s.opt.PollOpts = append(s.opt.PollOpts, netpoll.WithOnPrepare(prepare))
+	s.evloop, err = netpoll.NewEventLoop(s.onMsg, s.opt.PollOpts...)
+	if err != nil {
+		return nil, err
+	}
+
 	if opt.HandlerFunc == nil {
 		opt.HandlerFunc = func(rc *RpcContext, ser ServerSerializer) {
 			argMsg, handler := rc.Method(rc.SrvImpl)
@@ -103,45 +127,33 @@ func NewServer(opt *ServerOpt) *Server {
 			// 异步模式下，负载均衡只能是hash，因为rpc是单个Conn负责多个不同session的消息
 			// 默认对连接conn进行hash分发，实际上应该根据每个消息的session id分发，比如玩家id
 			opt.DispatcherFunc = func(c netpoll.Connection, msg *RpcRequestMessage) int {
-				h := fnv.New32a()
-				h.Write([]byte(c.RemoteAddr().String()))
-				return int(h.Sum32())
+				return rand.Int()
 			}
 		}
 	}
-	return s
+	return s, nil
 }
 
-func (s *Server) Run() {
-	pollConfig := netpoll.Config{
-		PollerNum: s.opt.PollerNum,
-	}
-	if err := netpoll.Configure(pollConfig); err != nil {
-		panic(err)
-	}
-
-	listener, err := netpoll.CreateListener("tcp", s.opt.Addr)
-	if err != nil {
-		panic(err)
-	}
-	if s.opt.PollOpts == nil {
-		s.opt.PollOpts = []netpoll.Option{}
-	}
-	s.opt.PollOpts = append(s.opt.PollOpts, netpoll.WithOnPrepare(prepare))
-	eventLoop, err := netpoll.NewEventLoop(
-		s.onMsg,
-		s.opt.PollOpts...,
-	)
-	if err != nil {
-		panic(err)
-	}
-	s.evloop = eventLoop
-
+func (s *Server) Run() error {
 	for i := 0; i < len(s.processors); i++ {
-		go s.processors[i].run(s.done)
+		s.wg.Add(1)
+		go s.processors[i].run(s.quit)
 	}
+	if err := s.evloop.Serve(s.listener); err != nil {
+		close(s.quit)
+		return err
+	}
+	return nil
+}
 
-	eventLoop.Serve(listener)
+func (s *Server) Stop(ctx context.Context) error {
+	if err := s.evloop.Shutdown(ctx); err != nil {
+		close(s.quit)
+		return err
+	}
+	close(s.quit)
+	s.wg.Wait()
+	return nil
 }
 
 type rpcTask struct {
@@ -182,7 +194,7 @@ func (s *Server) register(sd *ServiceDesc, ss any) {
 }
 
 func (s *Server) handler(mc *SvrMuxConn, msg *RpcRequestMessage) {
-	log.Printf("%d start handler rpc msg:%s\n", g.GoroutineID(), msg.String())
+	log.Debug("%d start handler rpc msg:%s\n", g.GoroutineID(), msg.String())
 	rc := new(RpcContext)
 	rc.Conn = mc
 	rc.Req = msg
@@ -207,7 +219,7 @@ func (s *Server) handler(mc *SvrMuxConn, msg *RpcRequestMessage) {
 
 	// handler msg
 	s.opt.HandlerFunc(rc, s.serializeResponse)
-	log.Printf("%d succeed handler rpc msg:%s\n", g.GoroutineID(), msg.String())
+	log.Debug("%d succeed handler rpc msg:%s\n", g.GoroutineID(), msg.String())
 }
 
 func (s *Server) serializeResponse(rc *RpcContext, sync bool) {
@@ -235,12 +247,12 @@ func (s *Server) serializeResponse(rc *RpcContext, sync bool) {
 	// 获取整个写入空间(长度头+消息体)
 	buf, err := buffer.Malloc(msgLenSize + sz)
 	if err != nil {
-		log.Printf("buffer.Malloc err:%v\n", err)
+		log.Error("buffer.Malloc err:%v\n", err)
 		return
 	}
 	data, err := defaultMarshaler.MarshalAppend(buf[msgLenSize:msgLenSize], rsp)
 	if err != nil {
-		log.Printf("proto.MarshalAppend err:%v\n", err)
+		log.Error("proto.MarshalAppend err:%v\n", err)
 		return
 	}
 	byteOrder.PutUint32(buf[:msgLenSize], uint32(len(data)))
@@ -252,12 +264,12 @@ func (s *Server) serializeResponse(rc *RpcContext, sync bool) {
 		} else {
 			_, err = rc.Conn.c.Write(buffer.Bytes())
 			if err != nil {
-				log.Printf("proto.MarshalAppend err:%v\n", err)
+				log.Error("proto.MarshalAppend err:%v\n", err)
 				return
 			}
 		}
 	} else {
-		log.Printf("serializeResponse size wrong %d, %d\n", len(data), len(buf[msgLenSize:]))
+		log.Error("serializeResponse size wrong %d, %d\n", len(data), len(buf[msgLenSize:]))
 		return
 	}
 }
@@ -267,10 +279,10 @@ const msgLenSize = 4 //32bits uint32
 func (s *Server) onMsg(ctx context.Context, c netpoll.Connection) (err error) {
 	defer func() {
 		if err != nil {
-			log.Printf("server read cli msg err:%v\n", err)
+			log.Error("server read cli msg err:%v\n", err)
 		}
 	}()
-	mc := ctx.Value(ctxkey).(*SvrMuxConn)
+	mc := ctx.Value(c).(*SvrMuxConn)
 	reader := c.Reader()
 	fmt.Printf("%d server read cli buffer surplus size:%d", g.GoroutineID(), reader.Len())
 	for {
@@ -293,7 +305,7 @@ func (s *Server) onMsg(ctx context.Context, c netpoll.Connection) (err error) {
 		// 反序列化
 		msg := &RpcRequestMessage{}
 		if err = defaultUnmarshaler.Unmarshal(packetBuf, msg); err != nil {
-			log.Printf("proto.Unmarshal RpcRequestMessage err:%v\n", err)
+			log.Error("proto.Unmarshal RpcRequestMessage err:%v\n", err)
 			return err
 		}
 
@@ -331,6 +343,9 @@ type rpcProcessor struct {
 }
 
 func (p *rpcProcessor) run(done <-chan struct{}) {
+	defer func() {
+		p.server.wg.Done()
+	}()
 	for {
 		select {
 		case <-done:
@@ -343,11 +358,9 @@ func (p *rpcProcessor) run(done <-chan struct{}) {
 	}
 }
 
-var ctxkey struct{}
-
 func prepare(conn netpoll.Connection) context.Context {
 	mc := newSvrMuxConn(conn)
-	ctx := context.WithValue(context.Background(), ctxkey, mc)
+	ctx := context.WithValue(context.Background(), conn, mc)
 	return ctx
 }
 
