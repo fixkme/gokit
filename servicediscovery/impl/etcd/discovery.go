@@ -100,7 +100,7 @@ type etcdImp struct {
 // Start Start the etcd client service
 func (e *etcdImp) Start() <-chan error {
 	e.quit.Store(false)
-	errChan := make(chan error, 10)
+	errChan := make(chan error, 1)
 	go func() {
 		defer func() {
 			if r := recover(); r != nil {
@@ -110,12 +110,11 @@ func (e *etcdImp) Start() <-chan error {
 		for {
 			select {
 			case <-e.ctx.Done():
-				errChan <- nil
 				return
 			case watchRsp, ok := <-e.rch:
 				if !ok {
 					log.Info("etcd watch channel closed!!!")
-					errChan <- nil
+					errChan <- errors.New("etcd watch channel closed")
 					return
 				}
 				if err := watchRsp.Err(); err != nil {

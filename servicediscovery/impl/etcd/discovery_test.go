@@ -13,7 +13,7 @@ import (
 )
 
 func TestEtcd(t *testing.T) {
-	log.UseDefaultLogger(context.Background(), &sync.WaitGroup{}, "", "debug")
+	log.UseDefaultLogger(context.Background(), &sync.WaitGroup{}, "", "mlog", "debug", true)
 	ctx, cancel := context.WithTimeout(context.Background(), 30000*time.Second)
 	defer cancel()
 	conf := &EtcdOpt{
