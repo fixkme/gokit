@@ -71,6 +71,7 @@ func (app *App) start(mods ...Module) {
 	for _, mi := range mods {
 		m := new(mod)
 		m.mi = mi
+		app.mods = append(app.mods, m)
 	}
 	app.setState(AppStateInit)
 	// 模块初始化
