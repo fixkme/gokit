@@ -51,7 +51,7 @@ func TestWsClient(t *testing.T) {
 }
 
 func client(id int) {
-	conn, err := net.Dial("tcp", "127.0.0.1:5000")
+	conn, err := net.DialTimeout("tcp", "127.0.0.1:7070", time.Second)
 	if err != nil {
 		panic(err)
 	}

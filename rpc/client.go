@@ -3,8 +3,6 @@ package rpc
 import (
 	"context"
 	"errors"
-	"fmt"
-	"strings"
 	sync "sync"
 	"sync/atomic"
 	"time"
@@ -22,8 +20,14 @@ type ClientConn struct {
 	conn     netpoll.Connection
 	wqueue   *mux.ShardQueue
 	genMsgId atomic.Uint32
-	waitRsps map[uint32]chan *callResult
+	waitRsps map[uint32]*callInfo
 	mtx      sync.Mutex
+}
+
+type callInfo struct {
+	syncRet  chan *callResult
+	asyncRet chan *AsyncCallResult
+	rsp      proto.Message
 }
 
 type ClientOpt struct {
@@ -45,7 +49,7 @@ func NewClientConn(network, address string, opt *ClientOpt) (*ClientConn, error)
 	}
 	cliConn := &ClientConn{
 		wqueue:   mux.NewShardQueue(opt.ShardQueueSize, conn),
-		waitRsps: make(map[uint32]chan *callResult),
+		waitRsps: make(map[uint32]*callInfo),
 	}
 	conn.SetOnRequest(func(ctx context.Context, connection netpoll.Connection) error {
 		return onClientMsg(ctx, connection, cliConn)
@@ -55,19 +59,17 @@ func NewClientConn(network, address string, opt *ClientOpt) (*ClientConn, error)
 	return cliConn, nil
 }
 
-func (cs *ClientConn) Invoke(ctx context.Context, path string, req, rsp proto.Message, opts ...*CallOption) error {
+var defaultCallOption = &CallOption{}
+
+func (cs *ClientConn) Invoke(ctx context.Context, service, method string, req, rsp proto.Message, opts ...*CallOption) error {
 	var opt *CallOption
 	if len(opts) != 0 {
 		opt = opts[0]
 	} else {
-		opt = &CallOption{}
+		opt = defaultCallOption
 	}
 
 	// 构造请求消息
-	v2 := strings.SplitN(path, "/", 2)
-	if len(v2) != 2 {
-		return fmt.Errorf("invalid path: %s", path)
-	}
 	payload, err := proto.Marshal(req)
 	if err != nil {
 		return err
@@ -75,8 +77,8 @@ func (cs *ClientConn) Invoke(ctx context.Context, path string, req, rsp proto.Me
 	seq := cs.genMsgId.Add(1)
 	rpcReq := &RpcRequestMessage{
 		Seq:         seq,
-		ServiceName: v2[0],
-		MethodName:  v2[1],
+		ServiceName: service,
+		MethodName:  method,
 		Md:          opt.Md,
 		Payload:     payload,
 	}
@@ -85,16 +87,26 @@ func (cs *ClientConn) Invoke(ctx context.Context, path string, req, rsp proto.Me
 		return err
 	}
 	cs.AsyncWrite(buffer)
+
+	// 处理异步
 	if !opt.Sync {
+		if opt.AsyncRetChan != nil {
+			callInfo := &callInfo{asyncRet: make(chan *AsyncCallResult, 1), rsp: rsp}
+			cs.mtx.Lock()
+			cs.waitRsps[seq] = callInfo
+			cs.mtx.Unlock()
+		}
 		return nil
 	}
 
-	// 同步
-	retCh := make(chan *callResult, 1)
+	// 处理同步
+	syncRet := make(chan *callResult, 1)
+	callInfo := &callInfo{syncRet: syncRet}
 	cs.mtx.Lock()
-	cs.waitRsps[seq] = retCh
+	cs.waitRsps[seq] = callInfo
 	cs.mtx.Unlock()
 	defer func() {
+		close(syncRet)
 		cs.mtx.Lock()
 		delete(cs.waitRsps, seq)
 		cs.mtx.Unlock()
@@ -108,7 +120,7 @@ func (cs *ClientConn) Invoke(ctx context.Context, path string, req, rsp proto.Me
 	select {
 	case <-ctx.Done():
 		select {
-		case ret := <-retCh:
+		case ret := <-syncRet:
 			if ret.senderr != nil {
 				return ret.senderr
 			}
@@ -120,7 +132,7 @@ func (cs *ClientConn) Invoke(ctx context.Context, path string, req, rsp proto.Me
 		default:
 			return ctx.Err()
 		}
-	case ret := <-retCh:
+	case ret := <-syncRet:
 		if ret.senderr != nil {
 			return ret.senderr
 		}
@@ -170,7 +182,7 @@ func (c *ClientConn) decodeRpcRsp(rpcRsp *RpcResponseMessage, out proto.Message)
 }
 
 func onClientClose(conn netpoll.Connection) error {
-	log.Info("%s client is Closed", conn.RemoteAddr().String())
+	log.Info("%s rpc client is Closed", conn.RemoteAddr().String())
 	return nil
 }
 
@@ -202,10 +214,19 @@ func onClientMsg(ctx context.Context, conn netpoll.Connection, cli *ClientConn) 
 		}
 
 		cli.mtx.Lock()
-		rch, ok := cli.waitRsps[msg.Seq]
+		callInfo, ok := cli.waitRsps[msg.Seq]
 		cli.mtx.Unlock()
 		if ok {
-			rch <- &callResult{rpcRsp: msg}
+			if callInfo.syncRet != nil {
+				callInfo.syncRet <- &callResult{rpcRsp: msg}
+			} else if callInfo.asyncRet != nil {
+				cli.mtx.Lock()
+				delete(cli.waitRsps, msg.Seq)
+				cli.mtx.Unlock()
+
+				callErr := cli.decodeRpcRsp(msg, callInfo.rsp)
+				callInfo.asyncRet <- &AsyncCallResult{Err: callErr, Rsp: callInfo.rsp}
+			}
 		}
 	}
 }

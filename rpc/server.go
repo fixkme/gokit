@@ -247,29 +247,27 @@ func (s *Server) serializeResponse(rc *RpcContext, sync bool) {
 	// 获取整个写入空间(长度头+消息体)
 	buf, err := buffer.Malloc(msgLenSize + sz)
 	if err != nil {
-		log.Error("buffer.Malloc err:%v\n", err)
+		log.Error("rpc server serializeResponse buffer.Malloc err:%v\n", err)
 		return
 	}
 	data, err := defaultMarshaler.MarshalAppend(buf[msgLenSize:msgLenSize], rsp)
 	if err != nil {
-		log.Error("proto.MarshalAppend err:%v\n", err)
+		log.Error("rpc server serializeResponse proto.MarshalAppend err:%v\n", err)
 		return
 	}
 	byteOrder.PutUint32(buf[:msgLenSize], uint32(len(data)))
 	if len(data) == len(buf[msgLenSize:]) {
 		if !sync { //处于异步
-			rc.Conn.Put(func() (netpoll.Writer, bool) {
-				return buffer, false
-			})
+			rc.Conn.Put(buffer)
 		} else {
 			_, err = rc.Conn.c.Write(buffer.Bytes())
 			if err != nil {
-				log.Error("proto.MarshalAppend err:%v\n", err)
+				log.Error("rpc server serializeResponse Write err:%v\n", err)
 				return
 			}
 		}
 	} else {
-		log.Error("serializeResponse size wrong %d, %d\n", len(data), len(buf[msgLenSize:]))
+		log.Error("rpc server serializeResponse size wrong %d, %d\n", len(data), len(buf[msgLenSize:]))
 		return
 	}
 }
@@ -284,7 +282,6 @@ func (s *Server) onMsg(ctx context.Context, c netpoll.Connection) (err error) {
 	}()
 	mc := ctx.Value(c).(*SvrMuxConn)
 	reader := c.Reader()
-	fmt.Printf("%d server read cli buffer surplus size:%d", g.GoroutineID(), reader.Len())
 	for {
 		lenBuf, _err := reader.Peek(msgLenSize)
 		if _err != nil {
@@ -376,6 +373,8 @@ type SvrMuxConn struct {
 	wqueue *mux.ShardQueue // use for async write
 }
 
-func (c *SvrMuxConn) Put(gt mux.WriterGetter) {
-	c.wqueue.Add(gt)
+func (c *SvrMuxConn) Put(buffer *netpoll.LinkBuffer) {
+	c.wqueue.Add(func() (buf netpoll.Writer, isNil bool) {
+		return buffer, false
+	})
 }

@@ -12,13 +12,18 @@ import (
 // type ClientInterceptor func(ctx context.Context, method string, req, reply proto.Message, cc *Connection, invoker Invoker, opts ...CallOption) error
 
 type CallOption struct {
-	Sync    bool //同步调用
-	Timeout time.Duration
-	Md      *Meta
+	Sync         bool //同步调用
+	Timeout      time.Duration
+	AsyncRetChan chan *AsyncCallResult
+	Md           *Meta
+}
+
+type AsyncCallResult struct {
+	Err error
+	Rsp proto.Message
 }
 
 type callResult struct {
-	sendok  bool
 	senderr error
 	rpcRsp  *RpcResponseMessage
 }
