@@ -90,8 +90,8 @@ func (cs *ClientConn) Invoke(ctx context.Context, service, method string, req, r
 
 	// 处理异步
 	if !opt.Sync {
-		if opt.AsyncRetChan != nil {
-			callInfo := &callInfo{asyncRet: make(chan *AsyncCallResult, 1), rsp: rsp}
+		if ch := opt.AsyncRetChan; ch != nil {
+			callInfo := &callInfo{asyncRet: ch, rsp: rsp}
 			cs.mtx.Lock()
 			cs.waitRsps[seq] = callInfo
 			cs.mtx.Unlock()

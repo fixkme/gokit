@@ -124,8 +124,7 @@ func NewServer(opt *ServerOpt) (*Server, error) {
 			})
 		}
 		if opt.DispatcherFunc == nil {
-			// 异步模式下，负载均衡只能是hash，因为rpc是单个Conn负责多个不同session的消息
-			// 默认对连接conn进行hash分发，实际上应该根据每个消息的session id分发，比如玩家id
+			// 默认随机分配
 			opt.DispatcherFunc = func(c netpoll.Connection, msg *RpcRequestMessage) int {
 				return rand.Int()
 			}
