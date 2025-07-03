@@ -55,7 +55,7 @@ func Invoke(cs *ConnState, ctx context.Context, path string, req, rsp proto.Mess
 	}
 	lenBuf := make([]byte, 4)
 	binary.LittleEndian.PutUint32(lenBuf, uint32(len(datas)))
-	if !opt.Sync {
+	if opt.Async {
 		// TODO 异步发送，如果io协程里写入fd失败是无法知道的
 		return cs.c.AsyncWritev([][]byte{lenBuf, datas}, nil)
 	}

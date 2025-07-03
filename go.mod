@@ -5,6 +5,7 @@ go 1.22.12
 require (
 	github.com/armon/go-radix v1.0.0
 	github.com/cloudwego/netpoll v0.7.0
+	github.com/emirpasic/gods v1.18.1
 	github.com/google/uuid v1.6.0
 	github.com/grpc-ecosystem/go-grpc-middleware v1.4.0
 	github.com/panjf2000/gnet/v2 v2.9.1
