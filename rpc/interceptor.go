@@ -12,17 +12,18 @@ import (
 // type ClientInterceptor func(ctx context.Context, method string, req, reply proto.Message, cc *Connection, invoker Invoker, opts ...CallOption) error
 
 type CallOption struct {
-	Async        bool          //是否异步，默认同步调用
-	Timeout      time.Duration //同步、异步都有效
-	AsyncRetChan chan *AsyncCallResult
-	Md           *Meta
+	Async        bool                  //是否异步，默认同步调用
+	Timeout      time.Duration         //同步、异步都有效
+	AsyncRetChan chan *AsyncCallResult //异步调用的输出，不关注回应的话设置为nil
+	ReqMd        *Meta                 //其他请求数据
+	PassThrough  any                   //异步调用的透传数据
 }
 
 type AsyncCallResult struct {
-	Err   error
-	Rsp   proto.Message
-	RspMd *Meta
-	Req   proto.Message
+	Err         error //出错
+	Rsp         any   //proto.Message或[]byte
+	RspMd       *Meta //回应的元数据
+	PassThrough any   //CallOption.PassThrough
 }
 
 type callResult struct {

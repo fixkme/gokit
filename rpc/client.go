@@ -32,11 +32,11 @@ type ClientConn struct {
 }
 
 type callInfo struct {
-	syncRet  chan *callResult
-	asyncRet chan *AsyncCallResult
-	req      proto.Message
-	rsp      proto.Message
-	expireAt int64
+	syncRet     chan *callResult
+	asyncRet    chan *AsyncCallResult
+	outRsp      proto.Message
+	passThrough any   //异步调用的透传数据
+	expireAt    int64 //异步调用超时时间
 }
 
 type ClientOpt struct {
@@ -77,30 +77,34 @@ func NewClientConn(network, address string, opt *ClientOpt) (*ClientConn, error)
 
 var defaultCallOption = &CallOption{}
 
-func (cs *ClientConn) Invoke(ctx context.Context, service, method string, req, rsp proto.Message, opts ...*CallOption) error {
+func (cs *ClientConn) Invoke(ctx context.Context, service, method string, req any, rsp proto.Message, opts ...*CallOption) (rspData []byte, err error) {
 	var opt *CallOption
 	if len(opts) != 0 {
 		opt = opts[0]
 	} else {
 		opt = defaultCallOption
 	}
-
 	// 构造请求消息
-	payload, err := proto.Marshal(req)
-	if err != nil {
-		return err
+	var payload []byte
+	if reqPb, ok := req.(proto.Message); ok {
+		payload, err = proto.Marshal(reqPb)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		payload = req.([]byte)
 	}
 	seq := cs.genMsgId.Add(1)
 	rpcReq := &RpcRequestMessage{
 		Seq:         seq,
 		ServiceName: service,
 		MethodName:  method,
-		Md:          opt.Md,
+		Md:          opt.ReqMd,
 		Payload:     payload,
 	}
 	buffer, err := cs.encodeRpcReq(rpcReq)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	cs.AsyncWrite(buffer)
 
@@ -129,12 +133,12 @@ func (cs *ClientConn) Invoke(ctx context.Context, service, method string, req, r
 					cs.updateTimerTrig <- expireAt
 				}
 			}
-			callInfo := &callInfo{asyncRet: ch, req: req, rsp: rsp, expireAt: expireAt}
+			callInfo := &callInfo{asyncRet: ch, outRsp: rsp, expireAt: expireAt, passThrough: opt.PassThrough}
 			cs.mtx.Lock()
 			cs.waitRsps[seq] = callInfo
 			cs.mtx.Unlock()
 		}
-		return nil
+		return nil, nil
 	}
 
 	// 处理同步
@@ -160,19 +164,19 @@ func (cs *ClientConn) Invoke(ctx context.Context, service, method string, req, r
 		select {
 		case ret := <-syncRet:
 			if ret.senderr != nil {
-				return ret.senderr
+				return nil, ret.senderr
 			}
 			if ret.rpcRsp == nil {
-				// 发送成功，但是还没有结果
-				return errors.New("wait reply exceed")
+				// 发送成功，但是还没有结果, 也许还在返回的路上
+				return nil, errors.New("wait reply exceed")
 			}
 			return cs.decodeRpcRsp(ret.rpcRsp, rsp)
 		default:
-			return ctx.Err()
+			return nil, ctx.Err()
 		}
 	case ret := <-syncRet:
 		if ret.senderr != nil {
-			return ret.senderr
+			return nil, ret.senderr
 		}
 		return cs.decodeRpcRsp(ret.rpcRsp, rsp)
 	}
@@ -203,20 +207,20 @@ func (c *ClientConn) encodeRpcReq(rpcReq *RpcRequestMessage) (*netpoll.LinkBuffe
 	return buffer, nil
 }
 
-func (c *ClientConn) decodeRpcRsp(rpcRsp *RpcResponseMessage, out proto.Message) error {
+func (c *ClientConn) decodeRpcRsp(rpcRsp *RpcResponseMessage, out proto.Message) (rspData []byte, err error) {
 	if rpcRsp.Error != "" {
 		if rpcRsp.Ecode != 0 {
-			return errs.CreateCodeError(rpcRsp.Ecode, rpcRsp.Error)
+			return nil, errs.CreateCodeError(rpcRsp.Ecode, rpcRsp.Error)
 		}
-		return errors.New(rpcRsp.Error)
+		return nil, errors.New(rpcRsp.Error)
 	}
 	if out != nil {
 		if err := proto.Unmarshal(rpcRsp.Payload, out); err != nil {
-			log.Error("failed to unmarshal response: %v", err)
-			return err
+			log.Error("rpc client failed to unmarshal response: %v", err)
+			return nil, err
 		}
 	}
-	return nil
+	return rpcRsp.Payload, nil
 }
 
 func onClientClose(conn netpoll.Connection) error {
@@ -258,20 +262,28 @@ func onClientMsg(ctx context.Context, conn netpoll.Connection, cli *ClientConn) 
 			if callInfo.syncRet != nil {
 				callInfo.syncRet <- &callResult{rpcRsp: msg}
 			} else if callInfo.asyncRet != nil {
-				cli.tmoutMtx.Lock()
-				val, ok := cli.timeouts.Get(callInfo.expireAt)
-				if ok {
-					set := val.(map[uint32]struct{})
-					delete(set, msg.Seq)
+				if exAt := callInfo.expireAt; exAt > 0 {
+					cli.tmoutMtx.Lock()
+					val, ok := cli.timeouts.Get(exAt)
+					if ok {
+						set := val.(map[uint32]struct{})
+						delete(set, msg.Seq)
+					}
+					cli.tmoutMtx.Unlock()
 				}
-				cli.tmoutMtx.Unlock()
 
 				cli.mtx.Lock()
 				delete(cli.waitRsps, msg.Seq)
 				cli.mtx.Unlock()
 
-				callErr := cli.decodeRpcRsp(msg, callInfo.rsp)
-				callInfo.asyncRet <- &AsyncCallResult{Err: callErr, Rsp: callInfo.rsp, RspMd: msg.Md, Req: callInfo.req}
+				rspData, callErr := cli.decodeRpcRsp(msg, callInfo.outRsp)
+				asyncRet := &AsyncCallResult{Err: callErr, RspMd: msg.Md, PassThrough: callInfo.passThrough}
+				if callInfo.outRsp != nil {
+					asyncRet.Rsp = callInfo.outRsp
+				} else {
+					asyncRet.Rsp = rspData
+				}
+				callInfo.asyncRet <- asyncRet
 			}
 		}
 	}

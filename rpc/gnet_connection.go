@@ -46,7 +46,7 @@ func Invoke(cs *ConnState, ctx context.Context, path string, req, rsp proto.Mess
 		Seq:         seq,
 		ServiceName: v2[0],
 		MethodName:  v2[1],
-		Md:          opt.Md,
+		Md:          opt.ReqMd,
 		Payload:     payload,
 	}
 	datas, err := proto.Marshal(rpcReq)
