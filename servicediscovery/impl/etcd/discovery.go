@@ -11,7 +11,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/fixkme/gokit/log"
+	"github.com/fixkme/gokit/mlog"
 	sd "github.com/fixkme/gokit/servicediscovery/discovery"
 	v3rpc "go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
 
@@ -104,7 +104,7 @@ func (e *etcdImp) Start() <-chan error {
 	go func() {
 		defer func() {
 			if r := recover(); r != nil {
-				log.Error("etcd run panic error: %v", r)
+				mlog.Error("etcd run panic error: %v", r)
 			}
 		}()
 		for {
@@ -113,12 +113,12 @@ func (e *etcdImp) Start() <-chan error {
 				return
 			case watchRsp, ok := <-e.rch:
 				if !ok {
-					log.Info("etcd watch channel closed!!!")
+					mlog.Info("etcd watch channel closed!!!")
 					errChan <- errors.New("etcd watch channel closed")
 					return
 				}
 				if err := watchRsp.Err(); err != nil {
-					log.Warn("etcd watch response error: %v", err)
+					mlog.Warn("etcd watch response error: %v", err)
 					if err = e.processWatchError(err); err != nil {
 						errChan <- err
 						return
@@ -145,12 +145,12 @@ func (e *etcdImp) Stop() {
 	e.quit.Store(true)
 	for k := range e.regServs {
 		if _, err := e.cli.Delete(e.ctx, k); err != nil {
-			log.Warn("etcd stop, Delete key error:%v", err)
+			mlog.Warn("etcd stop, Delete key error:%v", err)
 		}
 	}
 
 	if err := e.cli.Close(); err != nil {
-		log.Warn("etcd stop, Close error:%v", err)
+		mlog.Warn("etcd stop, Close error:%v", err)
 	}
 }
 
@@ -173,12 +173,12 @@ func (e *etcdImp) putServiceKey(key string, rpcAddr string) error {
 	if err != nil {
 		return err
 	}
-	log.Info("etcd Grant lease ID: %X, TTL %d", resp.ID, e.leaseTTL)
+	mlog.Info("etcd Grant lease ID: %X, TTL %d", resp.ID, e.leaseTTL)
 	_, err = e.cli.Put(e.ctx, key, rpcAddr, clientv3.WithLease(resp.ID))
 	if err != nil {
 		return err
 	}
-	log.Info("etcd PUT %s %s", key, rpcAddr)
+	mlog.Info("etcd PUT %s %s", key, rpcAddr)
 	e.regServs[key] = rpcAddr
 	ch, err := e.cli.KeepAlive(e.ctx, resp.ID)
 	if err != nil {
@@ -188,13 +188,13 @@ func (e *etcdImp) putServiceKey(key string, rpcAddr string) error {
 	go func() {
 		defer func() {
 			if r := recover(); r != nil {
-				log.Error("etcd keepalive recover error %v", r)
+				mlog.Error("etcd keepalive recover error %v", r)
 			}
 		}()
 		for {
 			_, ok := <-ch
 			if !ok {
-				log.Info("etcd key: %s KeepAlive channel closed", key)
+				mlog.Info("etcd key: %s KeepAlive channel closed", key)
 				return
 			}
 		}
@@ -251,11 +251,11 @@ func (e *etcdImp) GetAllService(serviceName string) (rpcAddrs map[string]string,
 func (e *etcdImp) onWatchEvent(evt *clientv3.Event) {
 	key := string(evt.Kv.Key)
 	value := string(evt.Kv.Value)
-	log.Info("etcd onWatchEvent type %s, key %s, value %s", evt.Type, key, value)
+	mlog.Info("etcd onWatchEvent type %s, key %s, value %s", evt.Type, key, value)
 
 	name, id, err := e.parseKey(key)
 	if err != nil {
-		log.Error("etcd onWatchEvent parseKey fail, key:%s, err:%v", key, err)
+		mlog.Error("etcd onWatchEvent parseKey fail, key:%s, err:%v", key, err)
 		return
 	}
 
@@ -264,18 +264,18 @@ func (e *etcdImp) onWatchEvent(evt *clientv3.Event) {
 
 	if int32(evt.Type) == eventType_Delete {
 		if e.delService(name, id) {
-			log.Info("etcd onWatchEvent delete (%s,%s)", name, id)
+			mlog.Info("etcd onWatchEvent delete (%s,%s)", name, id)
 		}
 		// 删除的是本节点服务，重新注册此服务（被删除的原因，可能是keepalive超时了）
 		if rpcAddr, ok := e.regServs[key]; ok && !e.quit.Load() {
-			log.Info("etcd OnWatchEvent register again, key:%s, rpcAddr:%s", key, rpcAddr)
+			mlog.Info("etcd OnWatchEvent register again, key:%s, rpcAddr:%s", key, rpcAddr)
 			if err := e.putServiceKey(key, rpcAddr); err != nil {
-				log.Error("etcd onWatchEvent putServiceKey err:%v", err)
+				mlog.Error("etcd onWatchEvent putServiceKey err:%v", err)
 			}
 		}
 	} else if int32(evt.Type) == eventType_Put {
 		if e.addService(name, id, value) {
-			log.Info("etcd onWatchEvent addService, %s -> %s", key, value)
+			mlog.Info("etcd onWatchEvent addService, %s -> %s", key, value)
 		}
 	}
 }
@@ -337,11 +337,11 @@ func (e *etcdImp) loadExistedServices() (revision int64, err error) {
 	defer cancel()
 	rsp, err := e.cli.Get(ctx, e.prefix, clientv3.WithPrefix())
 	if err != nil {
-		log.Error("cacheExistedServices GetRequest err: %v", err)
+		mlog.Error("cacheExistedServices GetRequest err: %v", err)
 		return 0, err
 	}
 	revision = rsp.Header.Revision
-	log.Info("loadExistedServices GetResponse revision %v", revision)
+	mlog.Info("loadExistedServices GetResponse revision %v", revision)
 
 	var key, value string
 	for _, v := range rsp.Kvs {
@@ -355,7 +355,7 @@ func (e *etcdImp) loadExistedServices() (revision int64, err error) {
 		}
 		if name, id, err := e.parseKey(key); err == nil {
 			if e.addService(name, id, value) {
-				log.Info("loadExistedServices addService, %s -> %s", key, value)
+				mlog.Info("loadExistedServices addService, %s -> %s", key, value)
 			}
 		}
 	}

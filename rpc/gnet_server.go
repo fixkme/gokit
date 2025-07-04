@@ -4,11 +4,11 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
-	"log"
 	"reflect"
 
 	"hash/fnv"
 
+	"github.com/fixkme/gokit/mlog"
 	"github.com/fixkme/gokit/util/errs"
 	g "github.com/fixkme/gokit/util/go"
 	"github.com/panjf2000/gnet/v2"
@@ -118,7 +118,7 @@ func (s *Server_Gnet) register(sd *ServiceDesc, ss any) {
 }
 
 func (s *Server_Gnet) handler(c gnet.Conn, msg *RpcRequestMessage) {
-	log.Printf("%d start handler rpc msg:%s\n", g.GoroutineID(), msg.String())
+	mlog.Debug("%d start handler rpc msg:%s", g.GoroutineID(), msg.String())
 	rc := new(RpcContext_Gnet)
 	rc.Conn = c
 	rc.Req = msg
@@ -143,7 +143,7 @@ func (s *Server_Gnet) handler(c gnet.Conn, msg *RpcRequestMessage) {
 
 	// handler msg
 	s.opt.HandlerFunc(rc, s.serializeResponse)
-	log.Printf("%d succeed handler rpc msg:%s\n", g.GoroutineID(), msg.String())
+	mlog.Debug("%d succeed handler rpc msg:%s", g.GoroutineID(), msg.String())
 }
 
 func (s *Server_Gnet) serializeResponse(rc *RpcContext_Gnet, sync bool) {
@@ -170,7 +170,7 @@ func (s *Server_Gnet) serializeResponse(rc *RpcContext_Gnet, sync bool) {
 	buf := make([]byte, msgLenSize+sz)
 	data, err := defaultMarshaler.MarshalAppend(buf[msgLenSize:msgLenSize], rsp)
 	if err != nil {
-		log.Printf("serializeResponse MarshalAppend wrong\n")
+		mlog.Error("serializeResponse MarshalAppend wrong")
 		return
 	}
 	if len(data) == len(buf[msgLenSize:]) {
@@ -178,7 +178,7 @@ func (s *Server_Gnet) serializeResponse(rc *RpcContext_Gnet, sync bool) {
 		if !sync { //处于异步
 			err = rc.Conn.AsyncWrite(buf, func(_ gnet.Conn, cerr error) error {
 				if cerr != nil {
-					log.Printf("AsyncWrite err:%v\n", err)
+					mlog.Error("AsyncWrite err:%v", cerr)
 				}
 				return nil
 			})
@@ -186,18 +186,18 @@ func (s *Server_Gnet) serializeResponse(rc *RpcContext_Gnet, sync bool) {
 			_, err = rc.Conn.Write(buf)
 		}
 		if err != nil {
-			log.Printf("serializeResponse Write wrong\n")
+			mlog.Error("serializeResponse Write wrong")
 			return
 		}
 	} else {
-		log.Printf("serializeResponse size wrong\n")
+		mlog.Error("serializeResponse size wrong")
 		return
 	}
 }
 
 func (s *Server_Gnet) OnTraffic(c gnet.Conn) (r gnet.Action) {
 	for {
-		log.Printf("%d server read cli buffer surplus size:%d", g.GoroutineID(), c.InboundBuffered())
+		mlog.Debug("%d server read cli buffer surplus size:%d", g.GoroutineID(), c.InboundBuffered())
 		lenBuf, err := c.Peek(msgLenSize)
 		if err != nil {
 			return gnet.None
@@ -216,7 +216,7 @@ func (s *Server_Gnet) OnTraffic(c gnet.Conn) (r gnet.Action) {
 		// 反序列化
 		msg := &RpcRequestMessage{}
 		if err = defaultUnmarshaler.Unmarshal(packetBuf, msg); err != nil {
-			log.Printf("proto.Unmarshal RpcRequestMessage err:%v\n", err)
+			mlog.Error("proto.Unmarshal RpcRequestMessage err:%v\n", err)
 			return gnet.None
 		}
 
@@ -260,7 +260,7 @@ func (s *Server_Gnet) Run() {
 		go s.processors[i].run(s.done)
 	}
 	if err := gnet.Run(s, s.opt.Addr, gnet.WithOptions(s.opt.Options)); err != nil {
-		log.Fatalf("Server Run with error: %v", err)
+		mlog.Error("Server Run with error: %v", err)
 	}
 }
 

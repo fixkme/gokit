@@ -5,12 +5,12 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"log"
 	"strings"
 	sync "sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/fixkme/gokit/mlog"
 	"github.com/fixkme/gokit/util/errs"
 	"github.com/panjf2000/gnet/v2"
 	"google.golang.org/protobuf/proto"
@@ -124,7 +124,7 @@ func (c *ConnState) decodeRpcRsp(rpcRsp *RpcResponseMessage, out proto.Message) 
 	}
 	if out != nil {
 		if err := proto.Unmarshal(rpcRsp.Payload, out); err != nil {
-			log.Printf("failed to unmarshal response: %v", err)
+			mlog.Error("failed to unmarshal response: %v", err)
 			return err
 		}
 	}
@@ -135,14 +135,14 @@ type ClientHander struct {
 }
 
 func (h *ClientHander) OnBoot(eng gnet.Engine) (action gnet.Action) {
-	log.Println("OnBoot")
+	mlog.Debug("OnBoot")
 	return 0
 }
 
 // OnShutdown fires when the engine is being shut down, it is called right after
 // all event-loops and connections are closed.
 func (h *ClientHander) OnShutdown(eng gnet.Engine) {
-	log.Println("OnShutdown")
+	mlog.Debug("OnShutdown")
 }
 
 // OnOpen fires when a new connection has been opened.
@@ -151,7 +151,7 @@ func (h *ClientHander) OnShutdown(eng gnet.Engine) {
 // The parameter out is the return value which is going to be sent back to the remote.
 // Sending large amounts of data back to the remote in OnOpen is usually not recommended.
 func (h *ClientHander) OnOpen(c gnet.Conn) (out []byte, action gnet.Action) {
-	log.Println("OnOpen")
+	mlog.Debug("OnOpen")
 	cs := &ConnState{
 		c:        c,
 		waitRsps: make(map[uint32]chan *callResult),
@@ -163,7 +163,7 @@ func (h *ClientHander) OnOpen(c gnet.Conn) (out []byte, action gnet.Action) {
 // OnClose fires when a connection has been closed.
 // The parameter err is the last known connection error.
 func (h *ClientHander) OnClose(c gnet.Conn, err error) (action gnet.Action) {
-	log.Println("OnClose")
+	mlog.Debug("OnClose")
 	return 0
 }
 
@@ -174,7 +174,7 @@ func (h *ClientHander) OnClose(c gnet.Conn, err error) (action gnet.Action) {
 // If you have to use this []byte in a new goroutine, you should either make a copy of it or call Conn.Read([]byte)
 // to read data into your own []byte, then pass the new []byte to the new goroutine.
 func (h *ClientHander) OnTraffic(c gnet.Conn) (action gnet.Action) {
-	log.Println("OnTraffic")
+	mlog.Debug("OnTraffic")
 	for {
 		lenBuf := make([]byte, 4)
 		_, err := c.Read(lenBuf)
@@ -208,6 +208,6 @@ func (h *ClientHander) OnTraffic(c gnet.Conn) (action gnet.Action) {
 // OnTick fires immediately after the engine starts and will fire again
 // following the duration specified by the delay return value.
 func (h *ClientHander) OnTick() (delay time.Duration, action gnet.Action) {
-	log.Println("OnTick")
+	mlog.Debug("OnTick")
 	return 5 * time.Second, 0
 }

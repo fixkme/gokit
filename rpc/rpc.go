@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/cloudwego/netpoll"
-	"github.com/fixkme/gokit/log"
+	"github.com/fixkme/gokit/mlog"
 	sd "github.com/fixkme/gokit/servicediscovery/discovery"
 	"github.com/fixkme/gokit/servicediscovery/impl/etcd"
 	"google.golang.org/protobuf/proto"
@@ -110,7 +110,7 @@ func (imp *RpcImp) connectTo(rpcAddr string) (*ClientConn, error) {
 		DailTimeout:    time.Second * 3,
 		ShardQueueSize: 4,
 		OnClientClose: func(c netpoll.Connection) error {
-			log.Info("%s rpc client conn closed", c.RemoteAddr().String())
+			mlog.Info("%s rpc client conn closed", c.RemoteAddr().String())
 			return nil
 		},
 	}

@@ -7,7 +7,7 @@ import (
 	"reflect"
 	sync "sync"
 
-	"github.com/fixkme/gokit/log"
+	"github.com/fixkme/gokit/mlog"
 
 	"github.com/cloudwego/netpoll"
 	"github.com/cloudwego/netpoll/mux"
@@ -193,7 +193,7 @@ func (s *Server) register(sd *ServiceDesc, ss any) {
 }
 
 func (s *Server) handler(mc *SvrMuxConn, msg *RpcRequestMessage) {
-	log.Debug("%d start handler rpc msg:%s\n", g.GoroutineID(), msg.String())
+	mlog.Debug("%d start handler rpc msg:%s\n", g.GoroutineID(), msg.String())
 	rc := new(RpcContext)
 	rc.Conn = mc
 	rc.Req = msg
@@ -218,7 +218,7 @@ func (s *Server) handler(mc *SvrMuxConn, msg *RpcRequestMessage) {
 
 	// handler msg
 	s.opt.HandlerFunc(rc, s.serializeResponse)
-	log.Debug("%d succeed handler rpc msg:%s\n", g.GoroutineID(), msg.String())
+	mlog.Debug("%d succeed handler rpc msg:%s\n", g.GoroutineID(), msg.String())
 }
 
 func (s *Server) serializeResponse(rc *RpcContext, sync bool) {
@@ -246,12 +246,12 @@ func (s *Server) serializeResponse(rc *RpcContext, sync bool) {
 	// 获取整个写入空间(长度头+消息体)
 	buf, err := buffer.Malloc(msgLenSize + sz)
 	if err != nil {
-		log.Error("rpc server serializeResponse buffer.Malloc err:%v\n", err)
+		mlog.Error("rpc server serializeResponse buffer.Malloc err:%v\n", err)
 		return
 	}
 	data, err := defaultMarshaler.MarshalAppend(buf[msgLenSize:msgLenSize], rsp)
 	if err != nil {
-		log.Error("rpc server serializeResponse proto.MarshalAppend err:%v\n", err)
+		mlog.Error("rpc server serializeResponse proto.MarshalAppend err:%v\n", err)
 		return
 	}
 	byteOrder.PutUint32(buf[:msgLenSize], uint32(len(data)))
@@ -261,12 +261,12 @@ func (s *Server) serializeResponse(rc *RpcContext, sync bool) {
 		} else {
 			_, err = rc.Conn.c.Write(buffer.Bytes())
 			if err != nil {
-				log.Error("rpc server serializeResponse Write err:%v\n", err)
+				mlog.Error("rpc server serializeResponse Write err:%v\n", err)
 				return
 			}
 		}
 	} else {
-		log.Error("rpc server serializeResponse size wrong %d, %d\n", len(data), len(buf[msgLenSize:]))
+		mlog.Error("rpc server serializeResponse size wrong %d, %d\n", len(data), len(buf[msgLenSize:]))
 		return
 	}
 }
@@ -276,7 +276,7 @@ const msgLenSize = 4 //32bits uint32
 func (s *Server) onMsg(ctx context.Context, c netpoll.Connection) (err error) {
 	defer func() {
 		if err != nil {
-			log.Error("server read cli msg err:%v\n", err)
+			mlog.Error("server read cli msg err:%v\n", err)
 		}
 	}()
 	mc := ctx.Value(c).(*SvrMuxConn)
@@ -301,7 +301,7 @@ func (s *Server) onMsg(ctx context.Context, c netpoll.Connection) (err error) {
 		// 反序列化
 		msg := &RpcRequestMessage{}
 		if err = defaultUnmarshaler.Unmarshal(packetBuf, msg); err != nil {
-			log.Error("proto.Unmarshal RpcRequestMessage err:%v\n", err)
+			mlog.Error("proto.Unmarshal RpcRequestMessage err:%v\n", err)
 			return err
 		}
 

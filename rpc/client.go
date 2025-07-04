@@ -7,11 +7,10 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/fixkme/gokit/log"
-
 	"github.com/cloudwego/netpoll"
 	"github.com/cloudwego/netpoll/mux"
 	"github.com/emirpasic/gods/trees/redblacktree"
+	"github.com/fixkme/gokit/mlog"
 	g "github.com/fixkme/gokit/util/go"
 	"google.golang.org/protobuf/proto"
 )
@@ -250,7 +249,7 @@ func (c *ClientConn) decodeRpcRsp(rpcRsp *RpcResponseMessage, out proto.Message)
 	}
 	if out != nil {
 		if err = c.opt.Unmarshaler.Unmarshal(rpcRsp.Payload, out); err != nil {
-			log.Error("rpc client failed to unmarshal response: %v", err)
+			mlog.Error("rpc client failed to unmarshal response: %v", err)
 			return
 		}
 	}
@@ -259,13 +258,13 @@ func (c *ClientConn) decodeRpcRsp(rpcRsp *RpcResponseMessage, out proto.Message)
 }
 
 func onClientClose(conn netpoll.Connection) error {
-	log.Info("%s rpc client is Closed", conn.RemoteAddr().String())
+	mlog.Info("%s rpc client is Closed", conn.RemoteAddr().String())
 	return nil
 }
 
 func onClientMsg(ctx context.Context, conn netpoll.Connection, cli *ClientConn) (err error) {
 	reader := conn.Reader()
-	log.Info("%d client read buffer surplus size:%d", g.GoroutineID(), reader.Len())
+	mlog.Info("%d client read buffer surplus size:%d", g.GoroutineID(), reader.Len())
 	for {
 		lenBuf, _err := reader.Peek(msgLenSize)
 		if _err != nil {
@@ -286,7 +285,7 @@ func onClientMsg(ctx context.Context, conn netpoll.Connection, cli *ClientConn) 
 		// 反序列化
 		msg := &RpcResponseMessage{}
 		if err = defaultUnmarshaler.Unmarshal(packetBuf, msg); err != nil {
-			log.Error("proto.Unmarshal RpcRequestMessage err:%v\n", err)
+			mlog.Error("proto.Unmarshal RpcRequestMessage err:%v\n", err)
 			return err
 		}
 

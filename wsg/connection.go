@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/fixkme/gokit/log"
+	"github.com/fixkme/gokit/mlog"
 	"github.com/panjf2000/gnet/v2"
 	"github.com/panjf2000/gnet/v2/pkg/pool/byteslice"
 )
@@ -29,6 +29,10 @@ func (conn *Conn) BindRoutingWorker(r RoutingWorker) {
 
 func (conn *Conn) BindSession(session any) {
 	conn.session = session
+}
+
+func (conn *Conn) GetSession() any {
+	return conn.session
 }
 
 func (conn *Conn) ReadWsHeader(c gnet.Conn) (headOk bool, err error) {
@@ -123,7 +127,7 @@ func (conn *Conn) Send(content []byte) (err error) {
 		if err == nil {
 			byteslice.Put(hbuff)
 		} else {
-			log.Error("ws AsyncWritev error: %v", err)
+			mlog.Error("ws AsyncWritev error: %v", err)
 		}
 		return nil
 	})
