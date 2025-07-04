@@ -2,7 +2,9 @@ package rpc
 
 import (
 	"encoding/binary"
+	"errors"
 
+	"github.com/fixkme/gokit/util/errs"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -20,6 +22,16 @@ var defaultUnmarshaler = proto.UnmarshalOptions{
 var defaultMarshaler = proto.MarshalOptions{
 	AllowPartial:  true,  //跳过required字段检查，因为根本没有required字段
 	Deterministic: false, //是否对map进行排序，以此保证输出的二进制数据是相同的。rpc消息是不需要的
+}
+
+func (msg *RpcResponseMessage) ParserError() error {
+	if msg.Error != "" {
+		if msg.Ecode != 0 {
+			return errs.CreateCodeError(msg.Ecode, msg.Error)
+		}
+		return errors.New(msg.Error)
+	}
+	return nil
 }
 
 func (md *Meta) GetInt(key string) int64 {

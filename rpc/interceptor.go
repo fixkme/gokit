@@ -19,6 +19,12 @@ type CallOption struct {
 	PassThrough  any                   //异步调用的透传数据
 }
 
+type CallResult struct {
+	Err   error //出错
+	Rsp   any   //proto.Message或[]byte
+	RspMd *Meta //回应的元数据
+}
+
 type AsyncCallResult struct {
 	Err         error //出错
 	Rsp         any   //proto.Message或[]byte

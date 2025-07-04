@@ -12,13 +12,13 @@ import (
 	"github.com/cloudwego/netpoll"
 	"github.com/cloudwego/netpoll/mux"
 	"github.com/emirpasic/gods/trees/redblacktree"
-	"github.com/fixkme/gokit/util/errs"
 	g "github.com/fixkme/gokit/util/go"
 	"google.golang.org/protobuf/proto"
 )
 
 type ClientConn struct {
 	conn     netpoll.Connection
+	opt      *ClientOpt
 	wqueue   *mux.ShardQueue
 	genMsgId atomic.Uint32
 	waitRsps map[uint32]*callInfo
@@ -43,20 +43,22 @@ type ClientOpt struct {
 	DailTimeout    time.Duration
 	ShardQueueSize int
 	OnClientClose  func(netpoll.Connection) error
+	Marshaler      *proto.MarshalOptions
+	Unmarshaler    *proto.UnmarshalOptions
 }
 
 func NewClientConn(network, address string, opt *ClientOpt) (*ClientConn, error) {
-	if opt.ShardQueueSize == 0 {
-		opt.ShardQueueSize = mux.ShardSize
-	}
-	if opt.OnClientClose == nil {
-		opt.OnClientClose = onClientClose
+	if opt == nil {
+		opt = defaultClientOpt
+	} else {
+		initClientOpt(opt)
 	}
 	conn, err := netpoll.DialConnection(network, address, opt.DailTimeout)
 	if err != nil {
 		return nil, err
 	}
 	cliConn := &ClientConn{
+		opt:             opt,
 		wqueue:          mux.NewShardQueue(opt.ShardQueueSize, conn),
 		waitRsps:        make(map[uint32]*callInfo),
 		timeouts:        &redblacktree.Tree{Comparator: timeUnixComparator},
@@ -75,9 +77,39 @@ func NewClientConn(network, address string, opt *ClientOpt) (*ClientConn, error)
 	return cliConn, nil
 }
 
-var defaultCallOption = &CallOption{}
+func initClientOpt(opt *ClientOpt) {
+	if opt.ShardQueueSize == 0 {
+		opt.ShardQueueSize = mux.ShardSize
+	}
+	if opt.OnClientClose == nil {
+		opt.OnClientClose = onClientClose
+	}
+	if opt.Marshaler == nil {
+		opt.Marshaler = &proto.MarshalOptions{}
+	}
+	if opt.Unmarshaler == nil {
+		opt.Unmarshaler = &proto.UnmarshalOptions{RecursionLimit: 100}
+	}
+}
 
-func (cs *ClientConn) Invoke(ctx context.Context, service, method string, req any, rsp proto.Message, opts ...*CallOption) (rspData []byte, err error) {
+var (
+	defaultClientOpt = &ClientOpt{
+		DailTimeout:    time.Second * 5,
+		ShardQueueSize: mux.ShardSize,
+		OnClientClose:  onClientClose,
+		Marshaler:      &proto.MarshalOptions{},
+		Unmarshaler:    &proto.UnmarshalOptions{RecursionLimit: 100},
+	}
+	defaultCallOption  = &CallOption{}
+	ErrInvalidReqData  = errors.New("invalid request data")
+	ErrWaitReplyExceed = errors.New("wait reply exceed")
+)
+
+// req：支持proto.Message和[]byte
+// outRsp：req对应的response，调用者明确指定具体的proto.Message对象，该方法不会帮助创建response对象
+// rspData: 同步调用且outRsp为nil时，以[]byte返回rspData
+// 默认是同步调用
+func (c *ClientConn) Invoke(ctx context.Context, service, method string, req any, outRsp proto.Message, opts ...*CallOption) (rspMd *Meta, rspData []byte, err error) {
 	var opt *CallOption
 	if len(opts) != 0 {
 		opt = opts[0]
@@ -87,14 +119,17 @@ func (cs *ClientConn) Invoke(ctx context.Context, service, method string, req an
 	// 构造请求消息
 	var payload []byte
 	if reqPb, ok := req.(proto.Message); ok {
-		payload, err = proto.Marshal(reqPb)
+		payload, err = c.opt.Marshaler.Marshal(reqPb)
 		if err != nil {
-			return nil, err
+			return
 		}
+	} else if reqData, ok := req.([]byte); ok {
+		payload = reqData
 	} else {
-		payload = req.([]byte)
+		err = ErrInvalidReqData
+		return
 	}
-	seq := cs.genMsgId.Add(1)
+	seq := c.genMsgId.Add(1)
 	rpcReq := &RpcRequestMessage{
 		Seq:         seq,
 		ServiceName: service,
@@ -102,11 +137,12 @@ func (cs *ClientConn) Invoke(ctx context.Context, service, method string, req an
 		Md:          opt.ReqMd,
 		Payload:     payload,
 	}
-	buffer, err := cs.encodeRpcReq(rpcReq)
-	if err != nil {
-		return nil, err
+	buffer, _err := c.encodeRpcReq(rpcReq)
+	if _err != nil {
+		err = _err
+		return
 	}
-	cs.AsyncWrite(buffer)
+	c.AsyncWrite(buffer)
 
 	// 处理异步
 	if opt.Async {
@@ -114,44 +150,44 @@ func (cs *ClientConn) Invoke(ctx context.Context, service, method string, req an
 			var expireAt int64
 			if opt.Timeout > 0 {
 				expireAt = time.Now().UnixMilli() + int64(opt.Timeout.Milliseconds())
-				cs.tmoutMtx.Lock()
-				val, ok := cs.timeouts.Get(expireAt)
+				c.tmoutMtx.Lock()
+				val, ok := c.timeouts.Get(expireAt)
 				var set map[uint32]struct{}
 				if ok {
 					set = val.(map[uint32]struct{})
 				} else {
 					set = make(map[uint32]struct{}, 1)
-					cs.timeouts.Put(expireAt, set)
+					c.timeouts.Put(expireAt, set)
 				}
 				set[seq] = struct{}{}
-				cs.tmoutMtx.Unlock()
+				c.tmoutMtx.Unlock()
 				//fmt.Printf("seq %d deadline %v\n", seq, expireAt)
-				if !cs.runTimeout.Load() {
-					cs.runTimeout.Store(true)
-					go cs.processTimeout(cs.quit)
+				if !c.runTimeout.Load() {
+					c.runTimeout.Store(true)
+					go c.processTimeout(c.quit)
 				} else {
-					cs.updateTimerTrig <- expireAt
+					c.updateTimerTrig <- expireAt
 				}
 			}
-			callInfo := &callInfo{asyncRet: ch, outRsp: rsp, expireAt: expireAt, passThrough: opt.PassThrough}
-			cs.mtx.Lock()
-			cs.waitRsps[seq] = callInfo
-			cs.mtx.Unlock()
+			callInfo := &callInfo{asyncRet: ch, outRsp: outRsp, expireAt: expireAt, passThrough: opt.PassThrough}
+			c.mtx.Lock()
+			c.waitRsps[seq] = callInfo
+			c.mtx.Unlock()
 		}
-		return nil, nil
+		return
 	}
 
 	// 处理同步
 	syncRet := make(chan *callResult, 1)
 	callInfo := &callInfo{syncRet: syncRet}
-	cs.mtx.Lock()
-	cs.waitRsps[seq] = callInfo
-	cs.mtx.Unlock()
+	c.mtx.Lock()
+	c.waitRsps[seq] = callInfo
+	c.mtx.Unlock()
 	defer func() {
 		close(syncRet)
-		cs.mtx.Lock()
-		delete(cs.waitRsps, seq)
-		cs.mtx.Unlock()
+		c.mtx.Lock()
+		delete(c.waitRsps, seq)
+		c.mtx.Unlock()
 	}()
 
 	if opt.Timeout > 0 {
@@ -164,21 +200,21 @@ func (cs *ClientConn) Invoke(ctx context.Context, service, method string, req an
 		select {
 		case ret := <-syncRet:
 			if ret.senderr != nil {
-				return nil, ret.senderr
+				return nil, nil, ret.senderr
 			}
 			if ret.rpcRsp == nil {
 				// 发送成功，但是还没有结果, 也许还在返回的路上
-				return nil, errors.New("wait reply exceed")
+				return nil, nil, ErrWaitReplyExceed
 			}
-			return cs.decodeRpcRsp(ret.rpcRsp, rsp)
+			return c.decodeRpcRsp(ret.rpcRsp, outRsp)
 		default:
-			return nil, ctx.Err()
+			return nil, nil, ctx.Err()
 		}
 	case ret := <-syncRet:
 		if ret.senderr != nil {
-			return nil, ret.senderr
+			return nil, nil, ret.senderr
 		}
-		return cs.decodeRpcRsp(ret.rpcRsp, rsp)
+		return c.decodeRpcRsp(ret.rpcRsp, outRsp)
 	}
 }
 
@@ -207,20 +243,19 @@ func (c *ClientConn) encodeRpcReq(rpcReq *RpcRequestMessage) (*netpoll.LinkBuffe
 	return buffer, nil
 }
 
-func (c *ClientConn) decodeRpcRsp(rpcRsp *RpcResponseMessage, out proto.Message) (rspData []byte, err error) {
-	if rpcRsp.Error != "" {
-		if rpcRsp.Ecode != 0 {
-			return nil, errs.CreateCodeError(rpcRsp.Ecode, rpcRsp.Error)
-		}
-		return nil, errors.New(rpcRsp.Error)
+func (c *ClientConn) decodeRpcRsp(rpcRsp *RpcResponseMessage, out proto.Message) (rspMd *Meta, rspData []byte, err error) {
+	rspMd = rpcRsp.Md
+	if err = rpcRsp.ParserError(); err != nil {
+		return
 	}
 	if out != nil {
-		if err := proto.Unmarshal(rpcRsp.Payload, out); err != nil {
+		if err = c.opt.Unmarshaler.Unmarshal(rpcRsp.Payload, out); err != nil {
 			log.Error("rpc client failed to unmarshal response: %v", err)
-			return nil, err
+			return
 		}
 	}
-	return rpcRsp.Payload, nil
+	rspData = rpcRsp.Payload
+	return
 }
 
 func onClientClose(conn netpoll.Connection) error {
@@ -276,8 +311,8 @@ func onClientMsg(ctx context.Context, conn netpoll.Connection, cli *ClientConn) 
 				delete(cli.waitRsps, msg.Seq)
 				cli.mtx.Unlock()
 
-				rspData, callErr := cli.decodeRpcRsp(msg, callInfo.outRsp)
-				asyncRet := &AsyncCallResult{Err: callErr, RspMd: msg.Md, PassThrough: callInfo.passThrough}
+				rspMd, rspData, callErr := cli.decodeRpcRsp(msg, callInfo.outRsp)
+				asyncRet := &AsyncCallResult{Err: callErr, RspMd: rspMd, PassThrough: callInfo.passThrough}
 				if callInfo.outRsp != nil {
 					asyncRet.Rsp = callInfo.outRsp
 				} else {
