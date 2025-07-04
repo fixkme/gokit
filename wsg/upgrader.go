@@ -84,7 +84,7 @@ func (u *Upgrader) selectSubprotocol(r *http.Request, responseHeader http.Header
 }
 
 func (u *Upgrader) Upgrade(conn *Conn, r *http.Request, responseHeader http.Header) error {
-	w := conn.c
+	w := conn
 	const badHandshake = "websocket: the client is not using the websocket protocol: "
 	if r.Method != http.MethodGet {
 		return u.returnError(w, r, http.StatusMethodNotAllowed, badHandshake+"request method is not GET")

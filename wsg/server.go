@@ -59,7 +59,7 @@ func (s *Server) OnShutdown(eng gnet.Engine) {
 
 func (s *Server) OnOpen(c gnet.Conn) (out []byte, action gnet.Action) {
 	log.Info("%s connection opened", c.RemoteAddr().String())
-	conn := &Conn{c: c}
+	conn := &Conn{Conn: c}
 	c.SetContext(conn)
 	return
 }

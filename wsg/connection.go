@@ -12,7 +12,7 @@ import (
 )
 
 type Conn struct {
-	c         gnet.Conn
+	gnet.Conn
 	upgraded  bool
 	buff      []byte
 	wsHeadOk  bool
@@ -119,7 +119,7 @@ func (conn *Conn) Send(content []byte) (err error) {
 	if err != nil {
 		return err
 	}
-	err = conn.c.AsyncWritev([][]byte{hbuff, content}, func(c gnet.Conn, err error) error {
+	err = conn.AsyncWritev([][]byte{hbuff, content}, func(c gnet.Conn, err error) error {
 		if err == nil {
 			byteslice.Put(hbuff)
 		} else {
@@ -142,11 +142,11 @@ func (conn *Conn) innerSendWsOpFrame(op byte, payload []byte) (err error) {
 	}()
 
 	if len(payload) == 0 {
-		if _, err = conn.c.Write(hbuff); err != nil {
+		if _, err = conn.Write(hbuff); err != nil {
 			return
 		}
 	} else {
-		if _, err = conn.c.Writev([][]byte{hbuff, payload}); err != nil {
+		if _, err = conn.Writev([][]byte{hbuff, payload}); err != nil {
 			return
 		}
 	}
@@ -155,13 +155,13 @@ func (conn *Conn) innerSendWsOpFrame(op byte, payload []byte) (err error) {
 
 func (conn *Conn) processOpFrame(wsh *WsHead, payload []byte) (err error) {
 	if !wsh.Fin {
-		ReplyWsError(conn.c, 1002, errInvalidControlFrame)
+		ReplyWsError(conn, 1002, errInvalidControlFrame)
 		return errInvalidControlFrame
 	}
 	switch wsh.OpCode {
 	case OpClose:
 		if len(payload) == 1 || len(payload) > 125 {
-			ReplyWsError(conn.c, 1002, errInvalidControlFrame)
+			ReplyWsError(conn, 1002, errInvalidControlFrame)
 			return errInvalidControlFrame
 		}
 		if len(payload) >= 2 {
@@ -176,7 +176,7 @@ func (conn *Conn) processOpFrame(wsh *WsHead, payload []byte) (err error) {
 		return errors.New("client ws closed")
 	case OpPing:
 		if len(payload) > 125 {
-			ReplyWsError(conn.c, 1002, errInvalidControlFrame)
+			ReplyWsError(conn, 1002, errInvalidControlFrame)
 			return errInvalidControlFrame
 		}
 		err = conn.innerSendWsOpFrame(OpPong, payload)

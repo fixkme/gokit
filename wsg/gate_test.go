@@ -9,7 +9,6 @@ import (
 	"net"
 	"net/http"
 	"strconv"
-	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -222,19 +221,4 @@ type _WsClient struct {
 	Account  string
 	PlayerId int64
 	ServerId int64
-}
-
-type _WsClientMgr struct {
-	clients map[int64]*_WsClient
-	mtx     sync.Mutex
-}
-
-var wsClientMgr = &_WsClientMgr{
-	clients: make(map[int64]*_WsClient),
-}
-
-func (m *_WsClientMgr) Add(client *_WsClient) {
-	m.mtx.Lock()
-	defer m.mtx.Unlock()
-	m.clients[client.PlayerId] = client
 }
