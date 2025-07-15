@@ -7,6 +7,8 @@ import (
 	"reflect"
 	"sync/atomic"
 	"syscall"
+
+	"github.com/fixkme/gokit/mlog"
 )
 
 // 节点全局状态
@@ -66,7 +68,7 @@ func (app *App) start(mods ...Module) {
 	if len(app.mods) != 0 {
 		log.Fatal("app mods cannot start twice")
 	}
-	log.Println("app starting up")
+	mlog.Info("app starting up")
 	// register
 	for _, mi := range mods {
 		m := new(mod)
@@ -86,22 +88,23 @@ func (app *App) start(mods ...Module) {
 		go run(m)
 	}
 	app.setState(AppStateRun)
-	log.Println("app started")
+	mlog.Info("app started")
 }
 
 func (app *App) stop() {
 	if app.GetState() == AppStateStop {
 		return
 	}
-	log.Println("app stop begin")
+	mlog.Info("app stop begin")
 	app.setState(AppStateStop)
 	// 先进后出
 	for i := len(app.mods) - 1; i >= 0; i-- {
 		m := app.mods[i]
+		mlog.Info("app stop module %s", m.mi.Name())
 		destroy(m)
 	}
 	app.setState(AppStateNone)
-	log.Println("app stoped")
+	mlog.Info("app stoped")
 }
 
 func run(m *mod) {
@@ -111,7 +114,7 @@ func run(m *mod) {
 func destroy(m *mod) {
 	defer func() {
 		if r := recover(); r != nil {
-			log.Println("module destroy panic: ", r)
+			mlog.Error("%s module destroy panic: %v", m.mi.Name(), r)
 		}
 	}()
 
@@ -124,7 +127,7 @@ func (app *App) Run(mods ...Module) {
 	for {
 		signal.Notify(c, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
 		sig := <-c
-		log.Printf("server closing down (signal: %v)", sig)
+		mlog.Info("server closing down (signal: %v)", sig)
 		if sig != syscall.SIGHUP {
 			break
 		}
