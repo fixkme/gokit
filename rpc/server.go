@@ -224,11 +224,13 @@ func (s *Server) handler(mc *SvrMuxConn, msg *RpcRequestMessage) {
 func (s *Server) serializeResponse(rc *RpcContext, sync bool) {
 	rsp := new(RpcResponseMessage)
 	rsp.Seq = rc.Req.Seq
+	rsp.Md = rc.ReplyMd
 	if rerr := rc.ReplyErr; rerr == nil {
 		rspData, err := proto.Marshal(rc.Reply)
 		if err == nil {
 			rsp.Payload = rspData
 		} else {
+			rsp.Ecode = 1
 			rsp.Error = err.Error()
 		}
 	} else {
@@ -236,6 +238,7 @@ func (s *Server) serializeResponse(rc *RpcContext, sync bool) {
 			rsp.Ecode = cerr.Code()
 			rsp.Error = cerr.Error()
 		} else {
+			rsp.Ecode = 1
 			rsp.Error = rerr.Error()
 		}
 	}
