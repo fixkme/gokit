@@ -61,9 +61,11 @@ func (imp *RpcImp) Run() error {
 	go func() {
 		err := <-errCh
 		if err != nil {
+			mlog.Error("RpcImp etcd error: %v", err)
 			imp.cancel()
 			imp.server.Stop(context.Background())
 		}
+		mlog.Info("RpcImp etcd stop")
 	}()
 	if err := imp.server.Run(); err != nil {
 		imp.cancel()
@@ -72,9 +74,9 @@ func (imp *RpcImp) Run() error {
 	return nil
 }
 
-func (r *RpcImp) Stop() error {
-	r.etcd.Stop()
-	if err := r.server.Stop(context.Background()); err != nil {
+func (imp *RpcImp) Stop() error {
+	imp.cancel()
+	if err := imp.server.Stop(context.Background()); err != nil {
 		return err
 	}
 	return nil

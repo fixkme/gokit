@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/signal"
 	"reflect"
+	"runtime/debug"
 	"sync/atomic"
 	"syscall"
 
@@ -114,7 +115,7 @@ func run(m *mod) {
 func destroy(m *mod) {
 	defer func() {
 		if r := recover(); r != nil {
-			mlog.Error("%s module destroy panic: %v", m.mi.Name(), r)
+			mlog.Error("%s module destroy panic: %v\n%s", m.mi.Name(), r, debug.Stack())
 		}
 	}()
 

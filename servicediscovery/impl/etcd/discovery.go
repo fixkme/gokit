@@ -103,6 +103,7 @@ func (e *etcdImp) Start() <-chan error {
 	errChan := make(chan error, 1)
 	go func() {
 		defer func() {
+			e.onStop()
 			if r := recover(); r != nil {
 				mlog.Error("etcd run panic error: %v", r)
 			}
@@ -139,19 +140,23 @@ func (e *etcdImp) Start() <-chan error {
 
 // Stop 关闭etcd连接
 func (e *etcdImp) Stop() {
-	if e.cli == nil {
-		return
-	}
+}
+
+func (e *etcdImp) onStop() {
 	e.quit.Store(true)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
 	for k := range e.regServs {
-		if _, err := e.cli.Delete(e.ctx, k); err != nil {
+		if _, err := e.cli.Delete(ctx, k); err != nil {
 			mlog.Warn("etcd stop, Delete key error:%v", err)
 		}
 	}
 
+	// cli.Close()会触发e.rch close
 	if err := e.cli.Close(); err != nil {
 		mlog.Warn("etcd stop, Close error:%v", err)
 	}
+	mlog.Info("etcd closed")
 }
 
 // RegisterService 发布服务到etcd，返回服务唯一标识（gate:b748593c-ec50-4b4c-8b4a-21705dd1789f）
