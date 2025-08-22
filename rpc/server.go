@@ -2,9 +2,11 @@ package rpc
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math/rand"
 	"reflect"
+	"runtime/debug"
 	sync "sync"
 
 	"github.com/fixkme/gokit/mlog"
@@ -12,7 +14,6 @@ import (
 	"github.com/cloudwego/netpoll"
 	"github.com/cloudwego/netpoll/mux"
 	"github.com/fixkme/gokit/util/errs"
-	g "github.com/fixkme/gokit/util/go"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -55,11 +56,13 @@ type Server struct {
 	opt      *ServerOpt
 	listener netpoll.Listener
 	evloop   netpoll.EventLoop
+	conns    map[netpoll.Connection]*SvrMuxConn
 
 	services   map[string]*serviceInfo // service name -> service info
 	processors []*rpcProcessor
 	quit       chan struct{}
 	wg         sync.WaitGroup
+	ctx        context.Context
 }
 
 type ServerOpt struct {
@@ -73,11 +76,13 @@ type ServerOpt struct {
 	HandlerFunc    RpcHandler
 }
 
-func NewServer(opt *ServerOpt) (*Server, error) {
+func NewServer(opt *ServerOpt, ctx context.Context) (*Server, error) {
 	s := &Server{
 		services: make(map[string]*serviceInfo),
+		conns:    make(map[netpoll.Connection]*SvrMuxConn),
 		quit:     make(chan struct{}),
 		opt:      opt,
+		ctx:      ctx,
 	}
 	pollConfig := netpoll.Config{
 		PollerNum: s.opt.PollerNum,
@@ -94,7 +99,10 @@ func NewServer(opt *ServerOpt) (*Server, error) {
 	if s.opt.PollOpts == nil {
 		s.opt.PollOpts = []netpoll.Option{}
 	}
-	s.opt.PollOpts = append(s.opt.PollOpts, netpoll.WithOnPrepare(prepare))
+	// s.opt.PollOpts = append(s.opt.PollOpts, netpoll.WithOnDisconnect(func(ctx context.Context, c netpoll.Connection) {
+	// 	delete(s.conns, c)
+	// }))
+	s.opt.PollOpts = append(s.opt.PollOpts, netpoll.WithOnPrepare(s.prepare))
 	s.evloop, err = netpoll.NewEventLoop(s.onMsg, s.opt.PollOpts...)
 	if err != nil {
 		return nil, err
@@ -146,12 +154,19 @@ func (s *Server) Run() error {
 }
 
 func (s *Server) Stop(ctx context.Context) error {
-	if err := s.evloop.Shutdown(ctx); err != nil {
-		close(s.quit)
-		return err
+	mlog.Debug("rpc server stop")
+	s.listener.Close()
+	for c := range s.conns {
+		if err := c.Close(); err != nil {
+			mlog.Error("rpc conn close error %v", err)
+		}
 	}
 	close(s.quit)
 	s.wg.Wait()
+	if err := s.evloop.Shutdown(ctx); err != nil {
+		return err
+	}
+	mlog.Debug("rpc server stoped")
 	return nil
 }
 
@@ -193,7 +208,7 @@ func (s *Server) register(sd *ServiceDesc, ss any) {
 }
 
 func (s *Server) handler(mc *SvrMuxConn, msg *RpcRequestMessage) {
-	mlog.Debug("%d start handler rpc msg:%s\n", g.GoroutineID(), msg.String())
+	//mlog.Debug("%d start handler rpc msg:%s", g.GoroutineID(), msg.String())
 	rc := new(RpcContext)
 	rc.Conn = mc
 	rc.Req = msg
@@ -218,7 +233,7 @@ func (s *Server) handler(mc *SvrMuxConn, msg *RpcRequestMessage) {
 
 	// handler msg
 	s.opt.HandlerFunc(rc, s.serializeResponse)
-	mlog.Debug("%d succeed handler rpc msg:%s\n", g.GoroutineID(), msg.String())
+	//mlog.Debug("%d succeed handler rpc msg:%s", g.GoroutineID(), msg.String())
 }
 
 func (s *Server) serializeResponse(rc *RpcContext, sync bool) {
@@ -276,18 +291,44 @@ func (s *Server) serializeResponse(rc *RpcContext, sync bool) {
 
 const msgLenSize = 4 //32bits uint32
 
+type ConnectionContextKey string
+
+const ConnectionContextName = ConnectionContextKey("ConnectionContext")
+
+func (s *Server) prepare(conn netpoll.Connection) context.Context {
+	mc := newSvrMuxConn(conn)
+	s.conns[conn] = mc
+	conn.AddCloseCallback(func(c netpoll.Connection) error {
+		delete(s.conns, c)
+		return nil
+	})
+	ctx := context.WithValue(s.ctx, ConnectionContextName, mc)
+	return ctx
+}
+
 func (s *Server) onMsg(ctx context.Context, c netpoll.Connection) (err error) {
 	defer func() {
+		if r := recover(); r != nil {
+			mlog.Error("rpc server onMsg panic:%v\n%s", r, debug.Stack())
+		}
 		if err != nil {
-			mlog.Error("server read cli msg err:%v\n", err)
+			mlog.Error("rpc server read cli msg err:%v\n", err)
 		}
 	}()
-	mc := ctx.Value(c).(*SvrMuxConn)
+	mc := ctx.Value(ConnectionContextName).(*SvrMuxConn)
 	reader := c.Reader()
 	for {
+		if !c.IsActive() {
+			return
+		}
+
 		lenBuf, _err := reader.Peek(msgLenSize)
-		if _err != nil {
-			return _err
+		if err = _err; err != nil {
+			if errors.Is(err, netpoll.ErrConnClosed) {
+				err = nil
+				return
+			}
+			return
 		}
 		dataLen := int(byteOrder.Uint32(lenBuf))
 		totalLen := msgLenSize + dataLen
@@ -298,21 +339,30 @@ func (s *Server) onMsg(ctx context.Context, c netpoll.Connection) (err error) {
 			return
 		}
 		packetBuf, _err := reader.Next(dataLen)
-		if _err != nil {
-			return _err
+		if err = _err; err != nil {
+			return
 		}
 		// 反序列化
 		msg := &RpcRequestMessage{}
 		if err = defaultUnmarshaler.Unmarshal(packetBuf, msg); err != nil {
 			mlog.Error("proto.Unmarshal RpcRequestMessage err:%v\n", err)
-			return err
+			return
 		}
 
 		if pn := len(s.processors); pn > 0 {
 			// 分发消息
 			hashCode := s.opt.DispatcherFunc(c, msg)
 			idx := hashCode % pn
-			s.processors[idx].inChan <- &rpcTask{conn: mc, msg: msg}
+			task := &rpcTask{conn: mc, msg: msg}
+			select {
+			case <-ctx.Done():
+				err = ctx.Err()
+				return
+			case s.processors[idx].inChan <- task:
+			default:
+				mlog.Error("rpc processors[%d] inChan is full!!!", idx)
+				s.processors[idx].inChan <- task
+			}
 		} else {
 			// 直接处理
 			s.handler(mc, msg)
@@ -355,12 +405,6 @@ func (p *rpcProcessor) run(done <-chan struct{}) {
 			}
 		}
 	}
-}
-
-func prepare(conn netpoll.Connection) context.Context {
-	mc := newSvrMuxConn(conn)
-	ctx := context.WithValue(context.Background(), conn, mc)
-	return ctx
 }
 
 func newSvrMuxConn(conn netpoll.Connection) *SvrMuxConn {

@@ -265,7 +265,7 @@ func onClientClose(conn netpoll.Connection) error {
 
 func onClientMsg(ctx context.Context, conn netpoll.Connection, cli *ClientConn) (err error) {
 	reader := conn.Reader()
-	mlog.Info("%d client read buffer surplus size:%d", g.GoroutineID(), reader.Len())
+	mlog.Debug("%d client read buffer surplus size:%d", g.GoroutineID(), reader.Len())
 	for {
 		lenBuf, _err := reader.Peek(msgLenSize)
 		if _err != nil {
@@ -396,7 +396,7 @@ func (c *ClientConn) processTimeout(quit <-chan struct{}) {
 			c.tmoutMtx.Unlock()
 			for _, callInfo := range callInfos {
 				if callInfo.asyncRet != nil {
-					callInfo.asyncRet <- &AsyncCallResult{Err: errors.New("rpc async call timeout")}
+					callInfo.asyncRet <- &AsyncCallResult{Err: errors.New("rpc async call timeout"), PassThrough: callInfo.passThrough}
 				}
 			}
 		}

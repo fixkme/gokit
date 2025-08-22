@@ -40,7 +40,7 @@ func NewRpc(pctx context.Context, rpcAddr, serviceGroup string, etcdConf *etcd.E
 		cancel()
 		return nil, err
 	}
-	server, err := NewServer(serverOpt)
+	server, err := NewServer(serverOpt, ctx)
 	if err != nil {
 		cancel()
 		return nil, err
@@ -71,14 +71,18 @@ func (imp *RpcImp) Run() error {
 		imp.cancel()
 		return err
 	}
+	mlog.Info("RpcImp Run exit")
 	return nil
 }
 
 func (imp *RpcImp) Stop() error {
 	imp.cancel()
-	if err := imp.server.Stop(context.Background()); err != nil {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if err := imp.server.Stop(ctx); err != nil {
 		return err
 	}
+	mlog.Info("RpcImp Stop")
 	return nil
 }
 
@@ -93,10 +97,8 @@ func (imp *RpcImp) RegisterService(serviceName string, cb func(rpcSrv *Server, n
 
 // 向etcd注册唯一服务， 已注册相同的服务则返回错误
 func (imp *RpcImp) RegisterServiceOnlyOne(serviceName string, cb func(rpcSrv *Server, nodeName string) error) error {
-	allService, err := imp.etcd.GetAllService(serviceName)
-	if err != nil {
-		return err
-	} else if len(allService) > 0 {
+	allService, _ := imp.etcd.GetAllService(serviceName)
+	if len(allService) > 0 {
 		return errors.New("already exists service")
 	}
 	nodeName, err := imp.etcd.RegisterService(serviceName, imp.rpcAddr)

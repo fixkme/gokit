@@ -65,6 +65,7 @@ func (s *Server) OnOpen(c gnet.Conn) (out []byte, action gnet.Action) {
 }
 
 func (s *Server) OnClose(c gnet.Conn, err error) (action gnet.Action) {
+	// gnet的OnClose无法区分是客户端退出还是server退出导致的关闭, 需要自己解决
 	if cb := s.opt.OnClientClose; cb != nil {
 		if conn, ok := c.Context().(*Conn); ok {
 			cb(conn, err)

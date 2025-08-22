@@ -111,6 +111,7 @@ func (e *etcdImp) Start() <-chan error {
 		for {
 			select {
 			case <-e.ctx.Done():
+				errChan <- nil
 				return
 			case watchRsp, ok := <-e.rch:
 				if !ok {
@@ -152,7 +153,7 @@ func (e *etcdImp) onStop() {
 		}
 	}
 
-	// cli.Close()会触发e.rch close
+	// cli.Close()会触发e.rch close, 但是通过调用顺序规避了
 	if err := e.cli.Close(); err != nil {
 		mlog.Warn("etcd stop, Close error:%v", err)
 	}
