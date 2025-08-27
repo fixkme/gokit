@@ -124,11 +124,10 @@ func (conn *Conn) Send(content []byte) (err error) {
 		return err
 	}
 	err = conn.AsyncWritev([][]byte{hbuff, content}, func(c gnet.Conn, err error) error {
-		if err == nil {
-			byteslice.Put(hbuff)
-		} else {
-			mlog.Error("ws AsyncWritev error: %v", err)
+		if err != nil {
+			mlog.Error("ws Send by AsyncWritev error: %v", err)
 		}
+		byteslice.Put(hbuff)
 		return nil
 	})
 	return
