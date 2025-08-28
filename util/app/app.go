@@ -6,6 +6,7 @@ import (
 	"os/signal"
 	"reflect"
 	"runtime/debug"
+	"sync"
 	"sync/atomic"
 	"syscall"
 
@@ -45,6 +46,7 @@ func DefaultApp() *App {
 type App struct {
 	mods  []*mod
 	state int32
+	wg    *sync.WaitGroup
 }
 
 // SetState 设置状态
@@ -85,8 +87,10 @@ func (app *App) start(mods ...Module) {
 		}
 	}
 	// 模块启动
+	app.wg = &sync.WaitGroup{}
 	for _, m := range app.mods {
-		go run(m)
+		app.wg.Add(1)
+		go run(m, app.wg)
 	}
 	app.setState(AppStateRun)
 	mlog.Info("app started")
@@ -104,11 +108,13 @@ func (app *App) stop() {
 		mlog.Info("app stop module %s", m.mi.Name())
 		destroy(m)
 	}
+	app.wg.Wait()
 	app.setState(AppStateNone)
 	mlog.Info("app stoped")
 }
 
-func run(m *mod) {
+func run(m *mod, wg *sync.WaitGroup) {
+	defer wg.Done()
 	m.mi.Run()
 }
 
