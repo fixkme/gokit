@@ -2,7 +2,6 @@ package rpc
 
 import (
 	"context"
-	"encoding/binary"
 	"errors"
 	"fmt"
 	"strings"
@@ -54,7 +53,7 @@ func Invoke(cs *ConnState, ctx context.Context, path string, req, rsp proto.Mess
 		return err
 	}
 	lenBuf := make([]byte, 4)
-	binary.LittleEndian.PutUint32(lenBuf, uint32(len(datas)))
+	byteOrder.PutUint32(lenBuf, uint32(len(datas)))
 	if opt.Async {
 		// TODO 异步发送，如果io协程里写入fd失败是无法知道的
 		return cs.c.AsyncWritev([][]byte{lenBuf, datas}, nil)
@@ -181,7 +180,7 @@ func (h *ClientHander) OnTraffic(c gnet.Conn) (action gnet.Action) {
 		if err != nil {
 			return
 		}
-		dataLen := binary.LittleEndian.Uint32(lenBuf)
+		dataLen := byteOrder.Uint32(lenBuf)
 		msgBuf := make([]byte, dataLen)
 		_, err = c.Read(msgBuf)
 		if err != nil {

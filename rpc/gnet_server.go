@@ -103,7 +103,7 @@ func (s *Server_Gnet) RegisterService(sd *ServiceDesc, ss any) {
 
 func (s *Server_Gnet) register(sd *ServiceDesc, ss any) {
 	if _, ok := s.services[sd.ServiceName]; ok {
-		err := fmt.Errorf("grpc: Server.RegisterService found duplicate service registration for %q", sd.ServiceName)
+		err := fmt.Errorf("rpc: Server.RegisterService found duplicate service registration for %q", sd.ServiceName)
 		panic(err)
 	}
 	info := &serviceInfo{
