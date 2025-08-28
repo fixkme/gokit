@@ -98,12 +98,18 @@ type etcdImp struct {
 }
 
 // Start Start the etcd client service
-func (e *etcdImp) Start() <-chan error {
+func (e *etcdImp) Start(wg *sync.WaitGroup) <-chan error {
 	e.quit.Store(false)
 	errChan := make(chan error, 1)
+	if wg != nil {
+		wg.Add(1)
+	}
 	go func() {
 		defer func() {
 			e.onStop()
+			if wg != nil {
+				wg.Done()
+			}
 			if r := recover(); r != nil {
 				mlog.Error("etcd run panic error: %v", r)
 			}

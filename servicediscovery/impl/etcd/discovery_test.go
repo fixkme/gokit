@@ -30,7 +30,7 @@ func TestEtcd(t *testing.T) {
 		fmt.Fprintln(os.Stderr, err)
 		return
 	}
-	errch := etcd.Start()
+	errch := etcd.Start(nil)
 	mlog.Info("etcd started")
 	etcd.RegisterService("myself", "127.0.0.1:8080")
 	select {

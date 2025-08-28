@@ -1,7 +1,9 @@
 package discovery
 
+import "sync"
+
 type Discovery interface {
-	Start() <-chan error
+	Start(wg *sync.WaitGroup) <-chan error
 
 	Stop()
 
