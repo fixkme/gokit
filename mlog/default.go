@@ -61,7 +61,17 @@ func (me *loggerImp) Start(ctx context.Context, wg *sync.WaitGroup) {
 		for {
 			select {
 			case <-ctx.Done():
-				return
+				for {
+					select {
+					case str := <-me.buff:
+						if me.stdOut {
+							fmt.Println(str)
+						}
+						me.ll.Println(str)
+					default:
+						return
+					}
+				}
 			case str := <-me.buff:
 				if me.stdOut {
 					fmt.Println(str)
