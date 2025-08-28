@@ -12,28 +12,9 @@ import (
 	"github.com/fixkme/gokit/mlog"
 
 	"github.com/cloudwego/netpoll"
-	"github.com/cloudwego/netpoll/mux"
 	"github.com/fixkme/gokit/util/errs"
 	"google.golang.org/protobuf/proto"
 )
-
-type MethodHandler func(srv any) (proto.Message, Handler)
-
-type MethodDesc struct {
-	MethodName string
-	Handler    MethodHandler
-}
-
-type ServiceDesc struct {
-	ServiceName string
-	HandlerType any
-	Methods     []MethodDesc
-}
-
-type serviceInfo struct {
-	serviceImpl any
-	methods     map[string]*MethodDesc
-}
 
 type RpcContext struct {
 	Conn    *SvrMuxConn
@@ -99,9 +80,6 @@ func NewServer(opt *ServerOpt, ctx context.Context) (*Server, error) {
 	if s.opt.PollOpts == nil {
 		s.opt.PollOpts = []netpoll.Option{}
 	}
-	// s.opt.PollOpts = append(s.opt.PollOpts, netpoll.WithOnDisconnect(func(ctx context.Context, c netpoll.Connection) {
-	// 	delete(s.conns, c)
-	// }))
 	s.opt.PollOpts = append(s.opt.PollOpts, netpoll.WithOnPrepare(s.prepare))
 	s.evloop, err = netpoll.NewEventLoop(s.onMsg, s.opt.PollOpts...)
 	if err != nil {
@@ -166,17 +144,12 @@ func (s *Server) Stop(ctx context.Context) error {
 	if err := s.evloop.Shutdown(ctx); err != nil {
 		return err
 	}
-	mlog.Debug("rpc server stoped")
 	return nil
 }
 
 type rpcTask struct {
 	conn *SvrMuxConn
 	msg  *RpcRequestMessage
-}
-
-type ServiceRegistrar interface {
-	RegisterService(desc *ServiceDesc, impl any)
 }
 
 func (s *Server) RegisterService(sd *ServiceDesc, ss any) {
@@ -193,7 +166,7 @@ func (s *Server) RegisterService(sd *ServiceDesc, ss any) {
 
 func (s *Server) register(sd *ServiceDesc, ss any) {
 	if _, ok := s.services[sd.ServiceName]; ok {
-		err := fmt.Errorf("grpc: Server.RegisterService found duplicate service registration for %q", sd.ServiceName)
+		err := fmt.Errorf("rpc: Server.RegisterService found duplicate service registration for %q", sd.ServiceName)
 		panic(err)
 	}
 	info := &serviceInfo{
@@ -237,6 +210,11 @@ func (s *Server) handler(mc *SvrMuxConn, msg *RpcRequestMessage) {
 }
 
 func (s *Server) serializeResponse(rc *RpcContext, sync bool) {
+	if !rc.Conn.c.IsActive() {
+		mlog.Warn("server conn is not active when serializing response")
+		return
+	}
+
 	rsp := new(RpcResponseMessage)
 	rsp.Seq = rc.Req.Seq
 	rsp.Md = rc.ReplyMd
@@ -275,8 +253,17 @@ func (s *Server) serializeResponse(rc *RpcContext, sync bool) {
 	byteOrder.PutUint32(buf[:msgLenSize], uint32(len(data)))
 	if len(data) == len(buf[msgLenSize:]) {
 		if !sync { //处于异步
-			rc.Conn.Put(buffer)
+			mlog.Debug("rpc server serializeResponse async send response %v", rc.Conn.c.IsActive())
+			if err = rc.Conn.c.Writer().Append(buffer); err != nil {
+				mlog.Error("rpc server serializeResponse Writer.Append err:%v\n", err)
+				return
+			}
+			if err = rc.Conn.c.Writer().Flush(); err != nil {
+				mlog.Error("rpc server serializeResponse Writer.Flush err:%v\n", err)
+				return
+			}
 		} else {
+			mlog.Debug("rpc server serializeResponse sync send response %v", rc.Conn.c.IsActive())
 			_, err = rc.Conn.c.Write(buffer.Bytes())
 			if err != nil {
 				mlog.Error("rpc server serializeResponse Write err:%v\n", err)
@@ -299,6 +286,7 @@ func (s *Server) prepare(conn netpoll.Connection) context.Context {
 	mc := newSvrMuxConn(conn)
 	s.conns[conn] = mc
 	conn.AddCloseCallback(func(c netpoll.Connection) error {
+		mlog.Debug("server conn closed %v", c == conn)
 		delete(s.conns, c)
 		return nil
 	})
@@ -318,7 +306,8 @@ func (s *Server) onMsg(ctx context.Context, c netpoll.Connection) (err error) {
 	mc := ctx.Value(ConnectionContextName).(*SvrMuxConn)
 	reader := c.Reader()
 	for {
-		if !c.IsActive() {
+		if reader.Len() <= msgLenSize {
+			mlog.Debug("rpc server conn reader len not enough:%d", reader.Len())
 			return
 		}
 
@@ -370,22 +359,6 @@ func (s *Server) onMsg(ctx context.Context, c netpoll.Connection) (err error) {
 	}
 }
 
-func (s *Server) makeRpcContext(mc *SvrMuxConn, msg *RpcRequestMessage) (ctx *RpcContext) {
-	ctx = &RpcContext{
-		Req:  msg,
-		Conn: mc,
-	}
-	serviceInfo, ok := s.services[msg.ServiceName]
-	if ok {
-		ctx.SrvImpl = serviceInfo.serviceImpl
-		md, ok := serviceInfo.methods[msg.MethodName]
-		if ok {
-			ctx.Method = md.Handler
-		}
-	}
-	return
-}
-
 type rpcProcessor struct {
 	server *Server
 	inChan chan *rpcTask
@@ -410,17 +383,9 @@ func (p *rpcProcessor) run(done <-chan struct{}) {
 func newSvrMuxConn(conn netpoll.Connection) *SvrMuxConn {
 	mc := &SvrMuxConn{}
 	mc.c = conn
-	mc.wqueue = mux.NewShardQueue(mux.ShardSize, conn)
 	return mc
 }
 
 type SvrMuxConn struct {
-	c      netpoll.Connection
-	wqueue *mux.ShardQueue // use for async write
-}
-
-func (c *SvrMuxConn) Put(buffer *netpoll.LinkBuffer) {
-	c.wqueue.Add(func() (buf netpoll.Writer, isNil bool) {
-		return buffer, false
-	})
+	c netpoll.Connection
 }

@@ -57,7 +57,8 @@ func NewRpc(pctx context.Context, rpcAddr, serviceGroup string, etcdConf *etcd.E
 }
 
 func (imp *RpcImp) Run() error {
-	errCh := imp.etcd.Start()
+	wg := &sync.WaitGroup{}
+	errCh := imp.etcd.Start(wg)
 	go func() {
 		err := <-errCh
 		if err != nil {
@@ -71,23 +72,32 @@ func (imp *RpcImp) Run() error {
 		imp.cancel()
 		return err
 	}
+	wg.Wait()
 	mlog.Info("RpcImp Run exit")
 	return nil
 }
 
 func (imp *RpcImp) Stop() error {
+	// 关闭etcd
 	imp.cancel()
+	// 关闭client
+	for _, cli := range imp.clients {
+		if err := cli.Close(); err != nil {
+			mlog.Error("RpcImp cli.Close error: %v", err)
+		}
+	}
+	// 停止server
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	if err := imp.server.Stop(ctx); err != nil {
 		return err
 	}
-	mlog.Info("RpcImp Stop")
+	mlog.Info("RpcImp Stoped")
 	return nil
 }
 
 // 向etcd注册服务
-func (imp *RpcImp) RegisterService(serviceName string, cb func(rpcSrv *Server, nodeName string) error) error {
+func (imp *RpcImp) RegisterService(serviceName string, cb func(rpcSrv ServiceRegistrar, nodeName string) error) error {
 	nodeName, err := imp.etcd.RegisterService(serviceName, imp.rpcAddr)
 	if nil != err {
 		return err
@@ -96,7 +106,7 @@ func (imp *RpcImp) RegisterService(serviceName string, cb func(rpcSrv *Server, n
 }
 
 // 向etcd注册唯一服务， 已注册相同的服务则返回错误
-func (imp *RpcImp) RegisterServiceOnlyOne(serviceName string, cb func(rpcSrv *Server, nodeName string) error) error {
+func (imp *RpcImp) RegisterServiceOnlyOne(serviceName string, cb func(rpcSrv ServiceRegistrar, nodeName string) error) error {
 	allService, _ := imp.etcd.GetAllService(serviceName)
 	if len(allService) > 0 {
 		return errors.New("already exists service")
@@ -127,14 +137,13 @@ func (imp *RpcImp) Call(serviceName string, cb RPCReq) (proto.Message, error) {
 
 func (imp *RpcImp) connectTo(rpcAddr string) (*ClientConn, error) {
 	opt := &ClientOpt{
-		DailTimeout:    time.Second * 3,
-		ShardQueueSize: 4,
-		OnClientClose: func(c netpoll.Connection) error {
-			mlog.Info("%s rpc client conn closed", c.RemoteAddr().String())
+		DailTimeout: time.Second * 3,
+		OnClientClose: func(conn netpoll.Connection) error {
+			mlog.Info("%s rpc client is Closed", conn.RemoteAddr().String())
 			return nil
 		},
 	}
-	cli, err := NewClientConn("tcp", rpcAddr, opt)
+	cli, err := NewClientConn("tcp4", rpcAddr, opt)
 	if err != nil {
 		return nil, err
 	}
