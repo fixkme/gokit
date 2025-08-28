@@ -227,7 +227,7 @@ func (imp *grpcerImp) Start() <-chan error {
 	errChan := make(chan error, 10)
 	imp.wg.Add(1)
 	go func() {
-		etcdErr := imp.etcd.Start()
+		etcdErr := imp.etcd.Start(&imp.wg)
 		err := <-etcdErr // 有任意错误就返回
 		if err != nil {
 			errChan <- err
