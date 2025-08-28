@@ -16,6 +16,7 @@ var (
 	errBadWriteOpCode      = errors.New("websocket: bad write message type")
 	errWriteClosed         = errors.New("websocket: write closed")
 	errInvalidControlFrame = errors.New("websocket: invalid control frame")
+	errClientClosed        = errors.New("client ws closed") //客户端主动关闭
 )
 
 const (

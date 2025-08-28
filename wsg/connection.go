@@ -2,7 +2,6 @@ package wsg
 
 import (
 	"encoding/binary"
-	"errors"
 	"fmt"
 	"io"
 
@@ -173,10 +172,10 @@ func (conn *Conn) processOpFrame(wsh *WsHead, payload []byte) (err error) {
 			if len(payload) > 2 {
 				reason = string(payload[2:])
 			}
-			fmt.Printf("对方关闭ws: %d, %s\n", statusCode, reason)
+			mlog.Info("ws client close: %d, %s\n", statusCode, reason)
 		}
 		conn.innerSendWsOpFrame(OpClose, payload)
-		return errors.New("client ws closed")
+		return errClientClosed
 	case OpPing:
 		if len(payload) > 125 {
 			ReplyWsError(conn, 1002, errInvalidControlFrame)
