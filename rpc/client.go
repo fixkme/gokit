@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/cloudwego/netpoll"
-	"github.com/cloudwego/netpoll/mux"
 	"github.com/emirpasic/gods/trees/redblacktree"
 	"github.com/fixkme/gokit/mlog"
 	g "github.com/fixkme/gokit/util/go"
@@ -17,8 +16,9 @@ import (
 
 type ClientConn struct {
 	conn     netpoll.Connection
+	network  string
+	address  string
 	opt      *ClientOpt
-	wqueue   *mux.ShardQueue
 	genMsgId atomic.Uint32
 	waitRsps map[uint32]*callInfo
 	mtx      sync.Mutex
@@ -30,59 +30,32 @@ type ClientConn struct {
 	updateTimerTrig chan int64
 }
 
-type callInfo struct {
-	syncRet     chan *callResult
-	asyncRet    chan *AsyncCallResult
-	outRsp      proto.Message
-	passThrough any   //异步调用的透传数据
-	expireAt    int64 //异步调用超时时间
-}
-
-type ClientOpt struct {
-	DailTimeout    time.Duration
-	ShardQueueSize int
-	OnClientClose  func(netpoll.Connection) error
-	Marshaler      *proto.MarshalOptions
-	Unmarshaler    *proto.UnmarshalOptions
-}
-
 func NewClientConn(network, address string, opt *ClientOpt) (*ClientConn, error) {
 	if opt == nil {
 		opt = defaultClientOpt
 	} else {
 		initClientOpt(opt)
 	}
+
 	conn, err := netpoll.DialConnection(network, address, opt.DailTimeout)
 	if err != nil {
 		return nil, err
 	}
 	cliConn := &ClientConn{
+		conn:            conn,
+		network:         network,
+		address:         address,
 		opt:             opt,
-		wqueue:          mux.NewShardQueue(opt.ShardQueueSize, conn),
 		waitRsps:        make(map[uint32]*callInfo),
 		timeouts:        &redblacktree.Tree{Comparator: timeUnixComparator},
-		quit:            make(chan struct{}, 1),
+		quit:            make(chan struct{}),
 		updateTimerTrig: make(chan int64, 1),
 	}
-	conn.SetOnRequest(func(ctx context.Context, connection netpoll.Connection) error {
-		return onClientMsg(ctx, connection, cliConn)
-	})
-	conn.AddCloseCallback(opt.OnClientClose)
-	conn.AddCloseCallback(func(connection netpoll.Connection) error {
-		close(cliConn.quit)
-		return nil
-	})
-	cliConn.conn = conn
+	cliConn.initConn(conn)
 	return cliConn, nil
 }
 
 func initClientOpt(opt *ClientOpt) {
-	if opt.ShardQueueSize == 0 {
-		opt.ShardQueueSize = mux.ShardSize
-	}
-	if opt.OnClientClose == nil {
-		opt.OnClientClose = onClientClose
-	}
 	if opt.Marshaler == nil {
 		opt.Marshaler = &proto.MarshalOptions{}
 	}
@@ -93,16 +66,19 @@ func initClientOpt(opt *ClientOpt) {
 
 var (
 	defaultClientOpt = &ClientOpt{
-		DailTimeout:    time.Second * 5,
-		ShardQueueSize: mux.ShardSize,
-		OnClientClose:  onClientClose,
-		Marshaler:      &proto.MarshalOptions{},
-		Unmarshaler:    &proto.UnmarshalOptions{RecursionLimit: 100},
+		DailTimeout: time.Second * 5,
+		Marshaler:   &proto.MarshalOptions{},
+		Unmarshaler: &proto.UnmarshalOptions{RecursionLimit: 100},
 	}
 	defaultCallOption  = &CallOption{}
 	ErrInvalidReqData  = errors.New("invalid request data")
 	ErrWaitReplyExceed = errors.New("wait reply exceed")
 )
+
+func (c *ClientConn) Close() error {
+	close(c.quit)
+	return c.conn.Close()
+}
 
 // req：支持proto.Message和[]byte
 // outRsp：req对应的response，调用者明确指定具体的proto.Message对象，该方法不会帮助创建response对象
@@ -141,7 +117,9 @@ func (c *ClientConn) Invoke(ctx context.Context, service, method string, req any
 		err = _err
 		return
 	}
-	c.AsyncWrite(buffer)
+	if err = c.AsyncWrite(buffer); err != nil {
+		return
+	}
 
 	// 处理异步
 	if opt.Async {
@@ -163,7 +141,7 @@ func (c *ClientConn) Invoke(ctx context.Context, service, method string, req any
 				//fmt.Printf("seq %d deadline %v\n", seq, expireAt)
 				if !c.runTimeout.Load() {
 					c.runTimeout.Store(true)
-					go c.processTimeout(c.quit)
+					go c.processTimeout()
 				} else {
 					c.updateTimerTrig <- expireAt
 				}
@@ -218,10 +196,22 @@ func (c *ClientConn) Invoke(ctx context.Context, service, method string, req any
 	}
 }
 
-func (c *ClientConn) AsyncWrite(buffer *netpoll.LinkBuffer) {
-	c.wqueue.Add(func() (buf netpoll.Writer, isNil bool) {
-		return buffer, false
-	})
+func (c *ClientConn) AsyncWrite(buffer *netpoll.LinkBuffer) error {
+	if !c.conn.IsActive() {
+		mlog.Warn("rpc client conn is not active, now reconnect")
+		if err := c.reconnect(); err != nil {
+			return err
+		}
+	}
+	if err := c.conn.Writer().Append(buffer); err != nil {
+		mlog.Error("rpc client conn Append err:%v", err)
+		return err
+	}
+	if err := c.conn.Writer().Flush(); err != nil {
+		mlog.Error("rpc client conn Flush err:%v", err)
+		return err
+	}
+	return nil
 }
 
 func (c *ClientConn) encodeRpcReq(rpcReq *RpcRequestMessage) (*netpoll.LinkBuffer, error) {
@@ -258,15 +248,17 @@ func (c *ClientConn) decodeRpcRsp(rpcRsp *RpcResponseMessage, out proto.Message)
 	return
 }
 
-func onClientClose(conn netpoll.Connection) error {
-	mlog.Info("%s rpc client is Closed", conn.RemoteAddr().String())
-	return nil
-}
-
-func onClientMsg(ctx context.Context, conn netpoll.Connection, cli *ClientConn) (err error) {
+func (cli *ClientConn) onRecvMsg(_ context.Context, conn netpoll.Connection) (err error) {
 	reader := conn.Reader()
-	mlog.Debug("%d client read buffer surplus size:%d", g.GoroutineID(), reader.Len())
+	mlog.Debug("%d client read buffer before size:%d", g.GoroutineID(), reader.Len())
+	defer func() {
+		mlog.Debug("%d client read buffer surplus size:%d", g.GoroutineID(), reader.Len())
+	}()
 	for {
+		if reader.Len() <= msgLenSize {
+			// Peek方法可能会阻塞
+			return nil
+		}
 		lenBuf, _err := reader.Peek(msgLenSize)
 		if _err != nil {
 			return _err
@@ -289,6 +281,7 @@ func onClientMsg(ctx context.Context, conn netpoll.Connection, cli *ClientConn) 
 			mlog.Error("proto.Unmarshal RpcRequestMessage err:%v\n", err)
 			return err
 		}
+		mlog.Debug("recv RpcResponseMessage msgId:%v", msg.Seq)
 
 		cli.mtx.Lock()
 		callInfo, ok := cli.waitRsps[msg.Seq]
@@ -318,13 +311,22 @@ func onClientMsg(ctx context.Context, conn netpoll.Connection, cli *ClientConn) 
 				} else {
 					asyncRet.Rsp = rspData
 				}
-				callInfo.asyncRet <- asyncRet
+				select {
+				case callInfo.asyncRet <- asyncRet:
+					mlog.Debug("async call push result msgId:%v", msg.Seq)
+				default:
+					mlog.Error("async call result chan is full!!!")
+					callInfo.asyncRet <- asyncRet
+				}
 			}
+		} else {
+			//rpc异步请求不需要response的情况
+			//mlog.Debug("cli.waitRsps not find msgId:%v", msg.Seq)
 		}
 	}
 }
 
-func (c *ClientConn) processTimeout(quit <-chan struct{}) {
+func (c *ClientConn) processTimeout() {
 	nowMs := time.Now().UnixMilli()
 	c.tmoutMtx.Lock()
 	expireAt := c.timeouts.Left().Key.(int64)
@@ -335,7 +337,7 @@ func (c *ClientConn) processTimeout(quit <-chan struct{}) {
 	var wasEmpty, updateTimer bool
 	for {
 		select {
-		case <-quit:
+		case <-c.quit:
 			return
 		case newExpireAt := <-c.updateTimerTrig:
 			updateTimer = false
@@ -347,6 +349,7 @@ func (c *ClientConn) processTimeout(quit <-chan struct{}) {
 				updateTimer = true
 			} else {
 				if newExpireAt < expireAt {
+					expireAt = newExpireAt
 					updateTimer = true
 				}
 			}
@@ -364,8 +367,6 @@ func (c *ClientConn) processTimeout(quit <-chan struct{}) {
 			for it.Next() {
 				expireAt = it.Key().(int64)
 				if nowMs < expireAt {
-					dur = expireAt - nowMs
-					timer.Reset(time.Millisecond * time.Duration(dur))
 					break
 				}
 				removes = append(removes, expireAt)
@@ -400,6 +401,30 @@ func (c *ClientConn) processTimeout(quit <-chan struct{}) {
 				}
 			}
 		}
+	}
+}
+
+func (c *ClientConn) reconnect() error {
+	conn, err := netpoll.DialConnection(c.network, c.address, c.opt.DailTimeout)
+	if err != nil {
+		mlog.Error("reconnect, rpc client Dial error %v", err)
+		return err
+	} else {
+		if err := c.conn.Close(); err != nil {
+			mlog.Error("reconnect, rpc client Close error %v", err)
+		}
+		c.conn = conn
+		c.initConn(conn)
+	}
+	return nil
+}
+
+func (c *ClientConn) initConn(conn netpoll.Connection) {
+	conn.SetOnRequest(func(ctx context.Context, nc netpoll.Connection) error {
+		return c.onRecvMsg(ctx, nc)
+	})
+	if c.opt.OnClientClose != nil {
+		conn.AddCloseCallback(c.opt.OnClientClose)
 	}
 }
 
