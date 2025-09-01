@@ -25,7 +25,7 @@ func WrapError(err error) CodeError {
 	if ok {
 		return x
 	}
-	return CreateCodeError(0, err.Error())
+	return CreateCodeError(ErrCode_Unknown, err.Error())
 }
 
 type codeError struct {
