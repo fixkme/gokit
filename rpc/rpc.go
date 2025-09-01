@@ -13,8 +13,6 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-type RPCReq func(context.Context, *ClientConn) (proto.Message, error)
-
 type RpcImp struct {
 	etcd sd.Discovery
 
