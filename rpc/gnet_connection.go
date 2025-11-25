@@ -9,8 +9,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/fixkme/gokit/errs"
 	"github.com/fixkme/gokit/mlog"
-	"github.com/fixkme/gokit/util/errs"
 	"github.com/panjf2000/gnet/v2"
 	"google.golang.org/protobuf/proto"
 )

@@ -9,10 +9,10 @@ import (
 	"reflect"
 	"strings"
 
+	"github.com/fixkme/gokit/errs"
 	"github.com/fixkme/gokit/mlog"
 	"github.com/fixkme/gokit/rpc"
-	"github.com/fixkme/gokit/util/errs"
-	"github.com/fixkme/gokit/util/strs"
+	"github.com/fixkme/gokit/util"
 	"github.com/gin-gonic/gin"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
@@ -77,7 +77,7 @@ func (s *Server) regWebRouter() {
 	v1.Any("/:service/:pathname", s.httpHandler)
 }
 
-// HTTP返回码(status)从公司web后台的常量配置获取
+// http handler
 func (s *Server) httpHandler(c *gin.Context) {
 	serviceName := c.Param("service")
 	methodName := c.Param("pathname")
@@ -93,11 +93,11 @@ func (s *Server) httpHandler(c *gin.Context) {
 		return
 	}
 
-	// 公司HTTP Content-Type标准
+	// HTTP Content-Type标准
 	// 默认：application/json
 	// GET：query string
 	// 上传文件：POST multipart/form-data
-	// 上传文件情况：提取文件数据到proto.Error
+	// 上传文件情况：提取文件数据到proto.Message
 	if c.ContentType() == "multipart/form-data" {
 		if err := fillReqUsingFormData(c, req); err != nil {
 			Response(c, http.StatusBadRequest, &ResponseResult{Ecode: 2302, Error: err.Error()})
@@ -125,7 +125,7 @@ func (s *Server) httpHandler(c *gin.Context) {
 }
 
 func (s *Server) makeMsg(service, method string) (req, resp proto.Message, err error) {
-	method = strs.UpperFirst(method)
+	method = util.UpperFirst(method)
 	reqFullName := service + ".C" + method
 	respFullName := service + ".S" + method
 	reqType, err := protoregistry.GlobalTypes.FindMessageByName(protoreflect.FullName(reqFullName))

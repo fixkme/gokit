@@ -10,7 +10,7 @@ import (
 	"github.com/cloudwego/netpoll"
 	"github.com/emirpasic/gods/trees/redblacktree"
 	"github.com/fixkme/gokit/mlog"
-	g "github.com/fixkme/gokit/util/go"
+	"github.com/fixkme/gokit/util"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -250,9 +250,9 @@ func (c *ClientConn) decodeRpcRsp(rpcRsp *RpcResponseMessage, out proto.Message)
 
 func (cli *ClientConn) onRecvMsg(_ context.Context, conn netpoll.Connection) (err error) {
 	reader := conn.Reader()
-	mlog.Debug("%d client read buffer before size:%d", g.GoroutineID(), reader.Len())
+	mlog.Debug("%d client read buffer before size:%d", util.GoroutineID(), reader.Len())
 	defer func() {
-		mlog.Debug("%d client read buffer surplus size:%d", g.GoroutineID(), reader.Len())
+		mlog.Debug("%d client read buffer surplus size:%d", util.GoroutineID(), reader.Len())
 	}()
 	for {
 		if reader.Len() <= msgLenSize {

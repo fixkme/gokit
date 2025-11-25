@@ -31,7 +31,7 @@ func (l *RedLock) Lock(lockKey string, expiry time.Duration, checkInterval time.
 	lockTries := int(expiry/checkInterval) + 1
 	for i := 0; i < lockTries; i++ {
 		if i != 0 {
-			<-time.After(checkInterval)
+			time.Sleep(checkInterval)
 		}
 		ret := l.rdb.SetNX(context.Background(), lockKey, l.entity, expiry)
 		if ret.Err() != nil {

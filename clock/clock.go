@@ -1,10 +1,12 @@
-package timer
+package clock
 
 import (
 	"errors"
 	"fmt"
 	"sync/atomic"
 	"time"
+
+	"github.com/fixkme/gokit/util"
 )
 
 const (
@@ -24,7 +26,7 @@ func init() {
 	for i := 0; i < _TIME_WHEEL_LEVEL; i++ {
 		_LEVEL_MASKS[i] = _LEVEL_SLOTS[i] - 1
 		if i > 0 {
-			_LEVEL_TICKS[i] = _LEVEL_SLOTS[i] * _LEVEL_SLOTS[i-1]
+			_LEVEL_TICKS[i] = _LEVEL_SLOTS[i] * _LEVEL_TICKS[i-1]
 		} else {
 			_LEVEL_TICKS[i] = _LEVEL_SLOTS[i]
 		}
@@ -34,17 +36,17 @@ func init() {
 type Clock struct {
 	genId    int64
 	lastTime int64
-	slot     [_TIME_WHEEL_LEVEL]int64
+	slot     [_TIME_WHEEL_LEVEL]int64 //每层的指针位置
 	tw       [_TIME_WHEEL_LEVEL]timeWheel
 	taskch   chan func()
 	closed   atomic.Bool
-	locs     map[int64]map[int64]*_Timer //记录位置
+	locs     map[int64]*_Timer //记录位置
 }
 
 func NewClock() *Clock {
 	c := &Clock{}
 	c.taskch = make(chan func(), 10240)
-	c.locs = make(map[int64]map[int64]*_Timer)
+	c.locs = make(map[int64]*_Timer)
 	for i := 0; i < _TIME_WHEEL_LEVEL; i++ {
 		c.slot[i] = 0
 		c.tw[i] = make(timeWheel, _LEVEL_SLOTS[i])
@@ -53,7 +55,7 @@ func NewClock() *Clock {
 	return c
 }
 
-type timeWheel []map[int64]*_Timer
+type timeWheel []*_List
 
 func (c *Clock) Start(quit <-chan struct{}) {
 	go c.run(quit)
@@ -92,7 +94,7 @@ func (c *Clock) UpdateTimer(id int64, when int64) (ok bool, err error) {
 
 func (c *Clock) addTimer(timer *_Timer) {
 	var ticks, level, slot int64
-	ticks = (timer.when - c.lastTime) / _SI
+	ticks = (timer.when - c.lastTime + _SI - 1) / _SI //diff 向上取整
 	if ticks <= 0 {
 		ticks = 1
 	}
@@ -106,28 +108,26 @@ func (c *Clock) addTimer(timer *_Timer) {
 		level--
 		slot = _LEVEL_MASKS[level]
 	}
-	fmt.Printf("------------new timer [%d %d, %d], when=%d, lastTime=%d, ticks:%d\n", timer.id, level, slot, timer.when, c.lastTime, ticks)
+	fmt.Printf("------------add timer [%d, %d, %d], when=%d, lastTime=%d, ticks:%d\n", timer.id, level, slot, timer.when, c.lastTime, ticks)
 	c.putTimer(level, slot, timer)
-	return
 }
 
 func (c *Clock) putTimer(level, slot int64, timer *_Timer) {
 	timerList := c.tw[level][slot]
 	if timerList == nil {
-		timerList = make(map[int64]*_Timer)
+		timerList = newTimerList()
 		c.tw[level][slot] = timerList
 	}
-	timerList[timer.id] = timer
-	c.locs[timer.id] = timerList
+	timerList.PushBack(timer)
+	c.locs[timer.id] = timer
 }
 
 func (c *Clock) delTimer(id int64) *_Timer {
-	list := c.locs[id]
-	t, ok := list[id]
+	timer, ok := c.locs[id]
 	if ok {
-		delete(list, id)
+		timer.removeFromList()
 		delete(c.locs, id)
-		return t
+		return timer
 	}
 	return nil
 }
@@ -142,18 +142,18 @@ func (c *Clock) updateTimer(id int64, when int64) bool {
 	return false
 }
 
-func (c *Clock) tick(nowMs, tkTime int64) {
-	// 0层触发定时器
-	c.slot[0] = (c.slot[0] + 1) & _LEVEL_MASKS[0]
+func (c *Clock) trigger(nowMs int64) {
 	batchs := make(map[chan<- []*Promise][]*Promise)
-	timers := c.tw[0][c.slot[0]]
-	for _, timer := range timers {
+	timerList := c.tw[0][c.slot[0]]
+	if timerList == nil {
+		return
+	}
+	timerList.PopRange(func(timer *_Timer) bool {
 		//删除
-		delete(timers, timer.id)
 		delete(c.locs, timer.id)
 		//触发
 		if timer.when <= nowMs {
-			fmt.Printf("timer trigger:%d, when:%d, now:%d\n", timer.id, timer.when, nowMs)
+			fmt.Printf("------------timer trigger id:%d, when:%d, now:%d\n", timer.id, timer.when, nowMs)
 			//传递到期定时器
 			promise := &Promise{TimerId: timer.id, NowTs: nowMs, Data: timer.data}
 			if timer.batch != nil {
@@ -166,16 +166,23 @@ func (c *Clock) tick(nowMs, tkTime int64) {
 				}
 			}
 		} else {
-			fmt.Printf("timer adjust:%+v, now:%d\n", timer, nowMs)
+			fmt.Printf("timer adjust id:%d, when:%d, now:%d, now slot:%d\n", timer.id, timer.when, nowMs, c.slot[0])
 			// 重新加入时间轮, 一般是下一次tick
 			c.addTimer(timer)
 		}
-	}
+		return true
+	})
+
 	for ch, promises := range batchs {
 		ch <- promises
 	}
+}
+
+func (c *Clock) tick(nowMs, tkTime int64) {
+	c.slot[0] = (c.slot[0] + 1) & _LEVEL_MASKS[0]
+	// 0层触发定时器
+	c.trigger(nowMs)
 	// 高层轮动
-	var timer *_Timer
 	var level, slot, ticks int64
 	for i := 1; i < _TIME_WHEEL_LEVEL; i++ {
 		if c.slot[i-1] != 0 {
@@ -183,11 +190,13 @@ func (c *Clock) tick(nowMs, tkTime int64) {
 		}
 		c.slot[i] = (c.slot[i] + 1) & _LEVEL_MASKS[i]
 		// move timer
-		timers := c.tw[i][c.slot[i]]
-		for _, timer = range timers {
+		timerList := c.tw[i][c.slot[i]]
+		if timerList == nil {
+			continue
+		}
+		timerList.PopRange(func(timer *_Timer) bool {
 			//删除
-			delete(timers, timer.id)
-			delete(c.locs, timer.id)
+			// delete(c.locs, timer.id) 后续还会加入
 			//加入到下一层
 			ticks = (timer.when - tkTime + _SI - 1) / _SI //diff 向上取整
 			if ticks <= 0 {
@@ -204,14 +213,15 @@ func (c *Clock) tick(nowMs, tkTime int64) {
 				slot = _LEVEL_MASKS[level]
 			}
 			c.putTimer(level, slot, timer)
-		}
+			return true
+		})
 	}
 }
 
 func (c *Clock) run(quit <-chan struct{}) {
 	tickTimeSpan := time.Millisecond * _SI
 	tickTimer := time.NewTimer(tickTimeSpan)
-	nowMs := time.Now().UnixMilli()
+	nowMs := util.NowMs()
 	c.lastTime = nowMs
 	var tk int64
 	for {
@@ -219,12 +229,9 @@ func (c *Clock) run(quit <-chan struct{}) {
 		case <-quit:
 			c.closed.Store(true)
 			close(c.taskch)
-			for fn := range c.taskch {
-				fn()
-			}
 			return
-		case tm := <-tickTimer.C:
-			nowMs = tm.UnixMilli()
+		case <-tickTimer.C:
+			nowMs = util.NowMs() // 可以修改时间
 			tk = c.lastTime + _SI
 			c.lastTime += _SI * ((nowMs - c.lastTime) / _SI)
 			for ; tk <= c.lastTime; tk += _SI {

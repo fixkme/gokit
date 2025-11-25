@@ -1,4 +1,4 @@
-package timer
+package clock
 
 import (
 	"fmt"
@@ -16,15 +16,14 @@ func TestTimer(t *testing.T) {
 		for {
 			select {
 			case tm := <-ti.C:
-				var delay int64 = 12000
+				var delay int64 = 10000
 				id, err := NewTimer(tm.UnixMilli()+delay, delay, receiver, nil)
-				fmt.Printf("create timer:%d, %v, now:%d\n", id, err, tm.UnixMilli())
+				fmt.Printf("created timer:%d, %v, now:%d\n", id, err, tm.UnixMilli())
 				ti.Reset(tickerSpan)
 			case v, ok := <-receiver:
 				if ok {
 					fmt.Printf("receive timer:%+v\n", v)
 				}
-			default:
 			}
 		}
 	}()

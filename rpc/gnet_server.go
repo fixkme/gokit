@@ -8,9 +8,9 @@ import (
 
 	"hash/fnv"
 
+	"github.com/fixkme/gokit/errs"
 	"github.com/fixkme/gokit/mlog"
-	"github.com/fixkme/gokit/util/errs"
-	g "github.com/fixkme/gokit/util/go"
+	"github.com/fixkme/gokit/util"
 	"github.com/panjf2000/gnet/v2"
 	"google.golang.org/protobuf/proto"
 )
@@ -118,7 +118,7 @@ func (s *Server_Gnet) register(sd *ServiceDesc, ss any) {
 }
 
 func (s *Server_Gnet) handler(c gnet.Conn, msg *RpcRequestMessage) {
-	mlog.Debug("%d start handler rpc msg:%s", g.GoroutineID(), msg.String())
+	mlog.Debug("%d start handler rpc msg:%s", util.GoroutineID(), msg.String())
 	rc := new(RpcContext_Gnet)
 	rc.Conn = c
 	rc.Req = msg
@@ -143,7 +143,7 @@ func (s *Server_Gnet) handler(c gnet.Conn, msg *RpcRequestMessage) {
 
 	// handler msg
 	s.opt.HandlerFunc(rc, s.serializeResponse)
-	mlog.Debug("%d succeed handler rpc msg:%s", g.GoroutineID(), msg.String())
+	mlog.Debug("%d succeed handler rpc msg:%s", util.GoroutineID(), msg.String())
 }
 
 func (s *Server_Gnet) serializeResponse(rc *RpcContext_Gnet, sync bool) {
@@ -197,7 +197,7 @@ func (s *Server_Gnet) serializeResponse(rc *RpcContext_Gnet, sync bool) {
 
 func (s *Server_Gnet) OnTraffic(c gnet.Conn) (r gnet.Action) {
 	for {
-		mlog.Debug("%d server read cli buffer surplus size:%d", g.GoroutineID(), c.InboundBuffered())
+		mlog.Debug("%d server read cli buffer surplus size:%d", util.GoroutineID(), c.InboundBuffered())
 		lenBuf, err := c.Peek(msgLenSize)
 		if err != nil {
 			return gnet.None

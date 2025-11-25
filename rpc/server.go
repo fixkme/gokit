@@ -9,10 +9,10 @@ import (
 	"runtime/debug"
 	sync "sync"
 
+	"github.com/cloudwego/netpoll"
+	"github.com/fixkme/gokit/errs"
 	"github.com/fixkme/gokit/mlog"
 
-	"github.com/cloudwego/netpoll"
-	"github.com/fixkme/gokit/util/errs"
 	"google.golang.org/protobuf/proto"
 )
 

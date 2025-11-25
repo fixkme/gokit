@@ -4,7 +4,7 @@ import (
 	"encoding/binary"
 	"errors"
 
-	"github.com/fixkme/gokit/util/errs"
+	"github.com/fixkme/gokit/errs"
 	"google.golang.org/protobuf/proto"
 )
 
