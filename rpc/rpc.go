@@ -28,7 +28,7 @@ type RpcImp struct {
 
 func NewRpc(pctx context.Context, rpcAddr, serviceGroup string, etcdConf *etcd.EtcdOpt, serverOpt *ServerOpt) (*RpcImp, error) {
 	if rpcAddr == "" {
-		if rpcAddr = getOneInnerIP(); rpcAddr == "" {
+		if rpcAddr = GetOneInnerIP(); rpcAddr == "" {
 			return nil, errors.New("no inner ip")
 		}
 	}
@@ -131,6 +131,32 @@ func (imp *RpcImp) Call(serviceName string, cb RPCReq) (proto.Message, error) {
 		}
 	}
 	return cb(imp.ctx, cli)
+}
+
+func (imp *RpcImp) CallAll(serviceName string, cb RPCReq) ([]proto.Message, error) {
+	addrs, err := imp.etcd.GetAllService(serviceName)
+	if err != nil {
+		return nil, err
+	}
+	rsps := []proto.Message{}
+	for _, addr := range addrs {
+		imp.cliMtx.RLock()
+		cli, ok := imp.clients[addr]
+		imp.cliMtx.RUnlock()
+		if !ok {
+			if cli, err = imp.connectTo(addr); nil != err {
+				mlog.Error("CallAll [%s,%s] connect err:%v", serviceName, addr, err)
+				continue
+			}
+		}
+		rsp, err := cb(imp.ctx, cli)
+		if err != nil {
+			mlog.Error("CallAll [%s,%s] cb err:%v", serviceName, addr, err)
+		} else {
+			rsps = append(rsps, rsp)
+		}
+	}
+	return rsps, nil
 }
 
 func (imp *RpcImp) connectTo(rpcAddr string) (*ClientConn, error) {
