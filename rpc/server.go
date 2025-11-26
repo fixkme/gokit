@@ -16,23 +16,6 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-type RpcContext struct {
-	Conn    *SvrMuxConn
-	Req     *RpcRequestMessage
-	SrvImpl any
-	Method  MethodHandler
-
-	Reply    proto.Message
-	ReplyErr error
-	ReplyMd  *Meta
-}
-
-type RpcHandler func(*RpcContext, ServerSerializer)
-
-type ServerSerializer func(rc *RpcContext, sync bool)
-
-type DispatchHash func(netpoll.Connection, *RpcRequestMessage) int
-
 type Server struct {
 	opt      *ServerOpt
 	listener netpoll.Listener
@@ -56,6 +39,9 @@ type ServerOpt struct {
 	DispatcherFunc DispatchHash
 	HandlerFunc    RpcHandler
 }
+
+type RpcHandler func(rc *RpcContext)
+type DispatchHash func(netpoll.Connection, *RpcRequestMessage) int
 
 func NewServer(opt *ServerOpt, ctx context.Context) (*Server, error) {
 	s := &Server{
@@ -87,14 +73,16 @@ func NewServer(opt *ServerOpt, ctx context.Context) (*Server, error) {
 	}
 
 	if opt.HandlerFunc == nil {
-		opt.HandlerFunc = func(rc *RpcContext, ser ServerSerializer) {
+		unmarshaler := proto.UnmarshalOptions{}
+		marshaler := proto.MarshalOptions{}
+		opt.HandlerFunc = func(rc *RpcContext) {
 			argMsg, handler := rc.Method(rc.SrvImpl)
-			if err := proto.Unmarshal(rc.Req.Payload, argMsg); err != nil {
+			if err := unmarshaler.Unmarshal(rc.Req.Payload, argMsg); err != nil {
 				rc.ReplyErr = err
 			} else {
 				rc.Reply, rc.ReplyErr = handler(context.Background(), argMsg)
 			}
-			ser(rc, len(s.processors) == 0)
+			rc.SerializeResponse(&marshaler)
 			// 或者投递给另一个actor协程 ...
 		}
 	}
@@ -192,95 +180,28 @@ func (s *Server) handler(mc *SvrMuxConn, msg *RpcRequestMessage) {
 		md, ok = serviceInfo.methods[msg.MethodName]
 		if !ok {
 			rc.ReplyErr = fmt.Errorf("not found method:%s", msg.MethodName)
-			s.serializeResponse(rc, len(s.processors) == 0)
+			rc.SerializeResponse(nil)
 			return
 		}
 	} else {
 		rc.ReplyErr = fmt.Errorf("not found service:%s", msg.ServiceName)
-		s.serializeResponse(rc, len(s.processors) == 0)
+		rc.SerializeResponse(nil)
 		return
 	}
 
 	rc.SrvImpl = serviceInfo.serviceImpl
 	rc.Method = md.Handler
 
-	// handler msg
-	s.opt.HandlerFunc(rc, s.serializeResponse)
+	// handler msg，因为写回客户端操作可能跨协程，worker协程或者业务处理logic协程，所以传递s.serializeResponse
+	s.opt.HandlerFunc(rc)
 	//mlog.Debug("%d succeed handler rpc msg:%s", g.GoroutineID(), msg.String())
-}
-
-func (s *Server) serializeResponse(rc *RpcContext, sync bool) {
-	if !rc.Conn.c.IsActive() {
-		mlog.Warn("server conn is not active when serializing response")
-		return
-	}
-
-	rsp := new(RpcResponseMessage)
-	rsp.Seq = rc.Req.Seq
-	rsp.Md = rc.ReplyMd
-	if rerr := rc.ReplyErr; rerr == nil {
-		rspData, err := proto.Marshal(rc.Reply)
-		if err == nil {
-			rsp.Payload = rspData
-		} else {
-			rsp.Ecode = 1
-			rsp.Error = err.Error()
-		}
-	} else {
-		if cerr, ok := rerr.(errs.CodeError); ok {
-			rsp.Ecode = cerr.Code()
-			rsp.Error = cerr.Error()
-		} else {
-			rsp.Ecode = 1
-			rsp.Error = rerr.Error()
-		}
-	}
-
-	// 反序列化rpc rsp
-	sz := defaultMarshaler.Size(rsp)
-	buffer := netpoll.NewLinkBuffer(msgLenSize + sz)
-	// 获取整个写入空间(长度头+消息体)
-	buf, err := buffer.Malloc(msgLenSize + sz)
-	if err != nil {
-		mlog.Error("rpc server serializeResponse buffer.Malloc err:%v\n", err)
-		return
-	}
-	data, err := defaultMarshaler.MarshalAppend(buf[msgLenSize:msgLenSize], rsp)
-	if err != nil {
-		mlog.Error("rpc server serializeResponse proto.MarshalAppend err:%v\n", err)
-		return
-	}
-	byteOrder.PutUint32(buf[:msgLenSize], uint32(len(data)))
-	if len(data) == len(buf[msgLenSize:]) {
-		if !sync { //处于异步
-			mlog.Debug("rpc server serializeResponse async send response %v", rc.Conn.c.IsActive())
-			if err = rc.Conn.c.Writer().Append(buffer); err != nil {
-				mlog.Error("rpc server serializeResponse Writer.Append err:%v\n", err)
-				return
-			}
-			if err = rc.Conn.c.Writer().Flush(); err != nil {
-				mlog.Error("rpc server serializeResponse Writer.Flush err:%v\n", err)
-				return
-			}
-		} else {
-			mlog.Debug("rpc server serializeResponse sync send response %v", rc.Conn.c.IsActive())
-			_, err = rc.Conn.c.Write(buffer.Bytes())
-			if err != nil {
-				mlog.Error("rpc server serializeResponse Write err:%v\n", err)
-				return
-			}
-		}
-	} else {
-		mlog.Error("rpc server serializeResponse size wrong %d, %d\n", len(data), len(buf[msgLenSize:]))
-		return
-	}
 }
 
 const msgLenSize = 4 //32bits uint32
 
-type ConnectionContextKey string
+type connectionContextKey string
 
-const ConnectionContextName = ConnectionContextKey("ConnectionContext")
+const connectionContextName = connectionContextKey("ConnectionContext")
 
 func (s *Server) prepare(conn netpoll.Connection) context.Context {
 	mc := newSvrMuxConn(conn)
@@ -290,30 +211,33 @@ func (s *Server) prepare(conn netpoll.Connection) context.Context {
 		delete(s.conns, c)
 		return nil
 	})
-	ctx := context.WithValue(s.ctx, ConnectionContextName, mc)
+	ctx := context.WithValue(s.ctx, connectionContextName, mc)
 	return ctx
 }
 
 func (s *Server) onMsg(ctx context.Context, c netpoll.Connection) (err error) {
 	defer func() {
 		if r := recover(); r != nil {
-			mlog.Error("rpc server onMsg panic:%v\n%s", r, debug.Stack())
+			err = fmt.Errorf("onMsg panic:%v", r)
+			mlog.Error("%v\n%s", err, debug.Stack())
 		}
 		if err != nil {
 			mlog.Error("rpc server read cli msg err:%v\n", err)
 		}
 	}()
-	mc := ctx.Value(ConnectionContextName).(*SvrMuxConn)
+	mc := ctx.Value(connectionContextName).(*SvrMuxConn)
 	reader := c.Reader()
-	for {
-		if reader.Len() <= msgLenSize {
-			mlog.Debug("rpc server conn reader len not enough:%d", reader.Len())
-			return
-		}
-
+	if reader.Len() == 0 {
+		mlog.Debug("server onMsg cli EOF")
+		// 对端发送 FIN，正常关闭
+		c.Close()
+		return
+	}
+	for reader.Len() > msgLenSize {
 		lenBuf, _err := reader.Peek(msgLenSize)
 		if err = _err; err != nil {
 			if errors.Is(err, netpoll.ErrConnClosed) {
+				mlog.Debug("server onMsg cli closed")
 				err = nil
 				return
 			}
@@ -333,7 +257,7 @@ func (s *Server) onMsg(ctx context.Context, c netpoll.Connection) (err error) {
 		}
 		// 反序列化
 		msg := &RpcRequestMessage{}
-		if err = defaultUnmarshaler.Unmarshal(packetBuf, msg); err != nil {
+		if err = rpcMsgUnmarshaler.Unmarshal(packetBuf, msg); err != nil {
 			mlog.Error("proto.Unmarshal RpcRequestMessage err:%v\n", err)
 			return
 		}
@@ -357,6 +281,7 @@ func (s *Server) onMsg(ctx context.Context, c netpoll.Connection) (err error) {
 			s.handler(mc, msg)
 		}
 	}
+	return
 }
 
 type rpcProcessor struct {
@@ -380,12 +305,83 @@ func (p *rpcProcessor) run(done <-chan struct{}) {
 	}
 }
 
+type RpcContext struct {
+	Conn    *SvrMuxConn
+	Req     *RpcRequestMessage
+	SrvImpl any
+	Method  MethodHandler
+
+	Reply    proto.Message
+	ReplyErr error
+	ReplyMd  *Meta
+}
+
+func (rc *RpcContext) SerializeResponse(marshaler *proto.MarshalOptions) {
+	if !rc.Conn.c.IsActive() {
+		mlog.Warn("server conn is not active when serializing response")
+		return
+	}
+
+	rsp := new(RpcResponseMessage)
+	rsp.Seq = rc.Req.Seq
+	rsp.Md = rc.ReplyMd
+	if rerr := rc.ReplyErr; rerr == nil {
+		rspData, err := marshaler.Marshal(rc.Reply)
+		if err == nil {
+			rsp.Payload = rspData
+		} else {
+			rsp.Ecode = errs.ErrCode_Marshal
+			rsp.Error = err.Error()
+		}
+	} else {
+		if cerr, ok := rerr.(errs.CodeError); ok {
+			rsp.Ecode = cerr.Code()
+			rsp.Error = cerr.Error()
+		} else {
+			rsp.Ecode = errs.ErrCode_Unknown
+			rsp.Error = rerr.Error()
+		}
+	}
+
+	// 反序列化rpc rsp
+	sz := rpcMsgMarshaler.Size(rsp)
+	buffer := netpoll.NewLinkBuffer(msgLenSize + sz)
+	// 获取整个写入空间(长度头+消息体)
+	buf, err := buffer.Malloc(msgLenSize + sz)
+	if err != nil {
+		mlog.Error("rpc server serializeResponse buffer.Malloc err:%v\n", err)
+		return
+	}
+	data, err := rpcMsgMarshaler.MarshalAppend(buf[msgLenSize:msgLenSize], rsp) // len=0,cap=len(buf)-msgLenSize
+	if err != nil {
+		mlog.Error("rpc server serializeResponse proto.MarshalAppend err:%v\n", err)
+		return
+	}
+	byteOrder.PutUint32(buf[:msgLenSize], uint32(len(data)))
+	if len(data) == len(buf[msgLenSize:]) {
+		mlog.Debug("rpc server serializeResponse async send response %v", rc.Conn.c.IsActive())
+		rc.Conn.mtx.Lock()
+		defer rc.Conn.mtx.Unlock()
+		if err = rc.Conn.c.Writer().Append(buffer); err != nil {
+			mlog.Error("rpc server serializeResponse Writer.Append err:%v\n", err)
+			return
+		}
+		if err = rc.Conn.c.Writer().Flush(); err != nil {
+			mlog.Error("rpc server serializeResponse Writer.Flush err:%v\n", err)
+			return
+		}
+	} else {
+		mlog.Error("rpc server serializeResponse size wrong %d, %d\n", len(data), len(buf[msgLenSize:]))
+		return
+	}
+}
+
 func newSvrMuxConn(conn netpoll.Connection) *SvrMuxConn {
-	mc := &SvrMuxConn{}
-	mc.c = conn
+	mc := &SvrMuxConn{c: conn}
 	return mc
 }
 
 type SvrMuxConn struct {
-	c netpoll.Connection
+	c   netpoll.Connection
+	mtx sync.Mutex
 }

@@ -10,15 +10,16 @@ import (
 	"github.com/cloudwego/netpoll"
 	"github.com/emirpasic/gods/trees/redblacktree"
 	"github.com/fixkme/gokit/mlog"
-	"github.com/fixkme/gokit/util"
 	"google.golang.org/protobuf/proto"
 )
 
 type ClientConn struct {
+	opt      *ClientOpt
 	conn     netpoll.Connection
+	wmtx     sync.Mutex // 写保护
 	network  string
 	address  string
-	opt      *ClientOpt
+	closed   atomic.Bool
 	genMsgId atomic.Uint32
 	waitRsps map[uint32]*callInfo
 	mtx      sync.Mutex
@@ -57,18 +58,18 @@ func NewClientConn(network, address string, opt *ClientOpt) (*ClientConn, error)
 
 func initClientOpt(opt *ClientOpt) {
 	if opt.Marshaler == nil {
-		opt.Marshaler = &proto.MarshalOptions{}
+		opt.Marshaler = defaultClientOpt.Marshaler
 	}
 	if opt.Unmarshaler == nil {
-		opt.Unmarshaler = &proto.UnmarshalOptions{RecursionLimit: 100}
+		opt.Unmarshaler = defaultClientOpt.Unmarshaler
 	}
 }
 
 var (
 	defaultClientOpt = &ClientOpt{
 		DailTimeout: time.Second * 5,
-		Marshaler:   &proto.MarshalOptions{},
-		Unmarshaler: &proto.UnmarshalOptions{RecursionLimit: 100},
+		Marshaler:   &proto.MarshalOptions{AllowPartial: true},
+		Unmarshaler: &proto.UnmarshalOptions{AllowPartial: true, RecursionLimit: 100},
 	}
 	defaultCallOption  = &CallOption{}
 	ErrInvalidReqData  = errors.New("invalid request data")
@@ -76,6 +77,7 @@ var (
 )
 
 func (c *ClientConn) Close() error {
+	c.closed.Store(true)
 	close(c.quit)
 	return c.conn.Close()
 }
@@ -93,17 +95,19 @@ func (c *ClientConn) Invoke(ctx context.Context, service, method string, req any
 	}
 	// 构造请求消息
 	var payload []byte
-	if reqPb, ok := req.(proto.Message); ok {
-		payload, err = c.opt.Marshaler.Marshal(reqPb)
+	switch reqVal := req.(type) {
+	case []byte:
+		payload = reqVal
+	case proto.Message:
+		payload, err = c.opt.Marshaler.Marshal(reqVal)
 		if err != nil {
 			return
 		}
-	} else if reqData, ok := req.([]byte); ok {
-		payload = reqData
-	} else {
+	default:
 		err = ErrInvalidReqData
 		return
 	}
+
 	seq := c.genMsgId.Add(1)
 	rpcReq := &RpcRequestMessage{
 		Seq:         seq,
@@ -117,7 +121,7 @@ func (c *ClientConn) Invoke(ctx context.Context, service, method string, req any
 		err = _err
 		return
 	}
-	if err = c.AsyncWrite(buffer); err != nil {
+	if err = c.asyncWrite(buffer); err != nil {
 		return
 	}
 
@@ -196,9 +200,16 @@ func (c *ClientConn) Invoke(ctx context.Context, service, method string, req any
 	}
 }
 
-func (c *ClientConn) AsyncWrite(buffer *netpoll.LinkBuffer) error {
+func (c *ClientConn) asyncWrite(buffer *netpoll.LinkBuffer) error {
+	if c.closed.Load() {
+		return errors.New("client closed")
+	}
+	c.wmtx.Lock()
+	defer c.wmtx.Unlock()
+	// 重连也是一种写操作，需要锁保护
+
 	if !c.conn.IsActive() {
-		mlog.Warn("rpc client conn is not active, now reconnect")
+		mlog.Warn("rpc client conn is not active when asyncWrite, now reconnect")
 		if err := c.reconnect(); err != nil {
 			return err
 		}
@@ -215,14 +226,14 @@ func (c *ClientConn) AsyncWrite(buffer *netpoll.LinkBuffer) error {
 }
 
 func (c *ClientConn) encodeRpcReq(rpcReq *RpcRequestMessage) (*netpoll.LinkBuffer, error) {
-	sz := defaultMarshaler.Size(rpcReq)
+	sz := rpcMsgMarshaler.Size(rpcReq)
 	buffer := netpoll.NewLinkBuffer(msgLenSize + sz)
 	// 获取整个写入空间(长度头+消息体)
 	buf, err := buffer.Malloc(msgLenSize + sz)
 	if err != nil {
 		return nil, err
 	}
-	data, err := defaultMarshaler.MarshalAppend(buf[msgLenSize:msgLenSize], rpcReq)
+	data, err := rpcMsgMarshaler.MarshalAppend(buf[msgLenSize:msgLenSize], rpcReq)
 	if err != nil {
 		return nil, err
 	}
@@ -250,13 +261,15 @@ func (c *ClientConn) decodeRpcRsp(rpcRsp *RpcResponseMessage, out proto.Message)
 
 func (cli *ClientConn) onRecvMsg(_ context.Context, conn netpoll.Connection) (err error) {
 	reader := conn.Reader()
-	mlog.Debug("%d client read buffer before size:%d", util.GoroutineID(), reader.Len())
-	defer func() {
-		mlog.Debug("%d client read buffer surplus size:%d", util.GoroutineID(), reader.Len())
-	}()
+	mlog.Debug("client read buffer before size:%d", reader.Len())
+	// defer func() {
+	// 	mlog.Debug("%d client read buffer surplus size:%d", util.GoroutineID(), reader.Len())
+	// }()
 	for {
 		if reader.Len() <= msgLenSize {
 			// Peek方法可能会阻塞
+			// 如果reader.Len() < msgLenSize, Peek方法会阻塞
+			// 所以需要提前判断 reader.Len() <= msgLenSize
 			return nil
 		}
 		lenBuf, _err := reader.Peek(msgLenSize)
@@ -277,7 +290,7 @@ func (cli *ClientConn) onRecvMsg(_ context.Context, conn netpoll.Connection) (er
 		}
 		// 反序列化
 		msg := &RpcResponseMessage{}
-		if err = defaultUnmarshaler.Unmarshal(packetBuf, msg); err != nil {
+		if err = rpcMsgUnmarshaler.Unmarshal(packetBuf, msg); err != nil {
 			mlog.Error("proto.Unmarshal RpcRequestMessage err:%v\n", err)
 			return err
 		}
@@ -413,18 +426,18 @@ func (c *ClientConn) reconnect() error {
 		if err := c.conn.Close(); err != nil {
 			mlog.Error("reconnect, rpc client Close error %v", err)
 		}
-		c.conn = conn
 		c.initConn(conn)
 	}
 	return nil
 }
 
-func (c *ClientConn) initConn(conn netpoll.Connection) {
+func (cc *ClientConn) initConn(conn netpoll.Connection) {
+	cc.conn = conn
 	conn.SetOnRequest(func(ctx context.Context, nc netpoll.Connection) error {
-		return c.onRecvMsg(ctx, nc)
+		return cc.onRecvMsg(ctx, nc)
 	})
-	if c.opt.OnClientClose != nil {
-		conn.AddCloseCallback(c.opt.OnClientClose)
+	if cc.opt.OnClientClose != nil {
+		conn.AddCloseCallback(cc.opt.OnClientClose)
 	}
 }
 

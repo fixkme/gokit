@@ -30,8 +30,8 @@ const (
 )
 
 type EtcdOpt struct {
-	clientv3.Config
-	LeaseTTL int64 `json:"leaseTTL"`
+	clientv3.Config `json:",inline"`
+	LeaseTTL        int64 `json:"leaseTTL"`
 }
 
 // NewEtcdDiscovery 创建一个etcd实例

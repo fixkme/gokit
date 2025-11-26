@@ -166,9 +166,9 @@ func (s *Server_Gnet) serializeResponse(rc *RpcContext_Gnet, sync bool) {
 	}
 
 	// 反序列化rpc rsp
-	sz := defaultMarshaler.Size(rsp)
+	sz := rpcMsgMarshaler.Size(rsp)
 	buf := make([]byte, msgLenSize+sz)
-	data, err := defaultMarshaler.MarshalAppend(buf[msgLenSize:msgLenSize], rsp)
+	data, err := rpcMsgMarshaler.MarshalAppend(buf[msgLenSize:msgLenSize], rsp)
 	if err != nil {
 		mlog.Error("serializeResponse MarshalAppend wrong")
 		return
@@ -215,7 +215,7 @@ func (s *Server_Gnet) OnTraffic(c gnet.Conn) (r gnet.Action) {
 		}
 		// 反序列化
 		msg := &RpcRequestMessage{}
-		if err = defaultUnmarshaler.Unmarshal(packetBuf, msg); err != nil {
+		if err = rpcMsgUnmarshaler.Unmarshal(packetBuf, msg); err != nil {
 			mlog.Error("proto.Unmarshal RpcRequestMessage err:%v\n", err)
 			return gnet.None
 		}

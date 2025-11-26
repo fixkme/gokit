@@ -11,7 +11,7 @@ import (
 var byteOrder binary.ByteOrder = binary.LittleEndian
 
 // rpc消息的全局解码器，客户端、服务端共用
-var defaultUnmarshaler = proto.UnmarshalOptions{
+var rpcMsgUnmarshaler = proto.UnmarshalOptions{
 	AllowPartial:   true, //跳过required字段检查，因为根本没有required字段
 	DiscardUnknown: true, //跳过未知字段检查, 1、字段是明确的，没有扩展字段，2、即使版本增减导致的unknown字段也不处理
 	RecursionLimit: 100,
@@ -19,7 +19,7 @@ var defaultUnmarshaler = proto.UnmarshalOptions{
 }
 
 // rpc消息的全局编码器，客户端、服务端共用
-var defaultMarshaler = proto.MarshalOptions{
+var rpcMsgMarshaler = proto.MarshalOptions{
 	AllowPartial:  true,  //跳过required字段检查，因为根本没有required字段
 	Deterministic: false, //是否对map进行排序，以此保证输出的二进制数据是相同的。rpc消息是不需要的
 }
