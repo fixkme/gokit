@@ -41,9 +41,9 @@ func GetInnerIPs() ([]string, error) {
 }
 
 // 同步调用
-func SyncCall(ctx context.Context, cc *ClientConn, req proto.Message, outRsp proto.Message) (err error) {
+func SyncCall(ctx context.Context, cc *ClientConn, req proto.Message, outRsp proto.Message, timeout time.Duration) (err error) {
 	opt := &CallOption{
-		Timeout: 3 * time.Second,
+		Timeout: timeout,
 	}
 	fullName := string(req.ProtoReflect().Descriptor().FullName())
 	v2 := strings.SplitN(fullName, ".", 2)
@@ -65,10 +65,11 @@ func AsyncCallWithoutResp(ctx context.Context, cc *ClientConn, req proto.Message
 }
 
 // 异步调用，带有回应
-func AsyncCallWithResp(ctx context.Context, cc *ClientConn, req proto.Message, outRsp proto.Message, outRet chan *AsyncCallResult, passData any) (err error) {
+func AsyncCallWithResp(ctx context.Context, cc *ClientConn, req proto.Message,
+	outRsp proto.Message, outRet chan *AsyncCallResult, passData any, timeout time.Duration) (err error) {
 	opt := &CallOption{
 		Async:        true,
-		Timeout:      3 * time.Second,
+		Timeout:      timeout,
 		AsyncRetChan: outRet,
 		PassThrough:  passData,
 	}
