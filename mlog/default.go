@@ -16,11 +16,11 @@ type loggerImp struct {
 	file   *os.File
 	ll     *log.Logger
 	buff   chan string
-	level  int
+	level  Level
 	stdOut bool
 }
 
-func newDefaultLogger(logpath, logName string, level string, stdOut bool) (*loggerImp, error) {
+func newDefaultLogger(logpath, logName string, level Level, stdOut bool) (*loggerImp, error) {
 	// 默认使用当前路径
 	if len(logpath) == 0 {
 		logpath = "."
@@ -37,7 +37,7 @@ func newDefaultLogger(logpath, logName string, level string, stdOut bool) (*logg
 		ll:     fileLogger,
 		file:   logfile,
 		buff:   make(chan string, 0x10000),
-		level:  getLevel(level),
+		level:  level,
 		stdOut: stdOut,
 	}
 	return mlog, nil
@@ -78,7 +78,6 @@ func (me *loggerImp) Start(ctx context.Context, wg *sync.WaitGroup) {
 				}
 				me.ll.Println(str)
 			case <-timer.C:
-
 				size, err := getFileSize(me.file.Name())
 				if err != nil {
 					log.Printf("getFileSize error %v\n", err)
@@ -102,36 +101,39 @@ func (me *loggerImp) Start(ctx context.Context, wg *sync.WaitGroup) {
 	}()
 }
 
-func (me *loggerImp) logFormat(prefix string, format string, v ...interface{}) {
-	me.buff <- fmt.Sprintf(prefix+format, v...)
-}
-
-func (me *loggerImp) Output(level, s string) {
-	me.buff <- fmt.Sprintf("[%s] ", level) + s
-}
-
-func (me *loggerImp) CanLog(level string) bool {
-	return me.level <= getLevel(level)
-}
-
-func getLevel(level string) (lv int) {
-	switch level {
-	case "trace":
-		lv = 0
-	case "debug":
-		lv = 1
-	case "info":
-		lv = 2
-	case "warn":
-		lv = 4
-	case "error":
-		lv = 5
-	case "fatal":
-		lv = 6
-	default:
-		lv = 0
+func (me *loggerImp) Logf(level Level, format string, args ...interface{}) {
+	if me.IsLevelEnabled(level) {
+		if len(args) == 0 {
+			me.buff <- (getLevelTag(level) + format)
+		} else {
+			format = getLevelTag(level) + format
+			me.buff <- fmt.Sprintf(format, args...)
+		}
 	}
-	return lv
+}
+
+func (me *loggerImp) IsLevelEnabled(level Level) bool {
+	return me.level >= level
+}
+
+func getLevelTag(level Level) string {
+	switch level {
+	case PanicLevel:
+		return "[panic] "
+	case FatalLevel:
+		return "[fatal] "
+	case ErrorLevel:
+		return "[error] "
+	case WarnLevel:
+		return "[warn] "
+	case InfoLevel:
+		return "[info] "
+	case DebugLevel:
+		return "[debug] "
+	case TraceLevel:
+		return "[trace] "
+	}
+	return ""
 }
 
 func genLogName(logName string) string {

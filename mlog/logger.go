@@ -2,13 +2,12 @@ package mlog
 
 import (
 	"context"
-	"fmt"
 	"sync"
 )
 
 type Logger interface {
-	Output(level string, s string)
-	CanLog(level string) bool
+	Logf(level Level, format string, args ...interface{})
+	IsLevelEnabled(level Level) bool
 }
 
 var logger Logger
@@ -17,7 +16,7 @@ func SetLogger(l Logger) {
 	logger = l
 }
 
-func UseDefaultLogger(ctx context.Context, wg *sync.WaitGroup, path string, logName string, level string, stdOut bool) error {
+func UseDefaultLogger(ctx context.Context, wg *sync.WaitGroup, path string, logName string, level Level, stdOut bool) error {
 	l, err := newDefaultLogger(path, logName, level, stdOut)
 	if err != nil {
 		return err
@@ -27,30 +26,42 @@ func UseDefaultLogger(ctx context.Context, wg *sync.WaitGroup, path string, logN
 	return nil
 }
 
+type Level uint32
+
+const (
+	PanicLevel Level = iota
+	FatalLevel
+	ErrorLevel
+	WarnLevel
+	InfoLevel
+	DebugLevel
+	TraceLevel
+)
+
 func Debug(format string, a ...interface{}) {
-	if logger == nil || !logger.CanLog("debug") {
+	if logger == nil {
 		return
 	}
-	logger.Output("debug", fmt.Sprintf(format, a...))
+	logger.Logf(DebugLevel, format, a...)
 }
 
 func Info(format string, a ...interface{}) {
-	if logger == nil || !logger.CanLog("info") {
+	if logger == nil {
 		return
 	}
-	logger.Output("info", fmt.Sprintf(format, a...))
+	logger.Logf(InfoLevel, format, a...)
 }
 
 func Warn(format string, a ...interface{}) {
-	if logger == nil || !logger.CanLog("warn") {
+	if logger == nil {
 		return
 	}
-	logger.Output("warn", fmt.Sprintf(format, a...))
+	logger.Logf(WarnLevel, format, a...)
 }
 
 func Error(format string, a ...interface{}) {
-	if logger == nil || !logger.CanLog("error") {
+	if logger == nil {
 		return
 	}
-	logger.Output("error", fmt.Sprintf(format, a...))
+	logger.Logf(ErrorLevel, format, a...)
 }
