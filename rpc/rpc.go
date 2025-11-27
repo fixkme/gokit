@@ -28,17 +28,16 @@ type RpcImp struct {
 
 func NewRpc(pctx context.Context, rpcAddr, serviceGroup string, etcdConf *etcd.EtcdOpt, serverOpt *ServerOpt) (*RpcImp, error) {
 	if rpcAddr == "" {
-		if rpcAddr = GetOneInnerIP(); rpcAddr == "" {
-			return nil, errors.New("no inner ip")
-		}
+		return nil, errors.New("rpcAddr is empty")
 	}
+
 	ctx, cancel := context.WithCancel(pctx)
 	etcd, err := etcd.NewEtcdDiscovery(ctx, serviceGroup, etcdConf)
 	if err != nil {
 		cancel()
 		return nil, err
 	}
-	server, err := NewServer(serverOpt, ctx)
+	server, err := NewServer(rpcAddr, serverOpt, ctx)
 	if err != nil {
 		cancel()
 		return nil, err

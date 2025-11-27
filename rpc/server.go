@@ -30,7 +30,6 @@ type Server struct {
 }
 
 type ServerOpt struct {
-	ListenAddr        string
 	PollerNum         int
 	PollOpts          []netpoll.Option
 	ProcessorSize     int64
@@ -43,7 +42,7 @@ type ServerOpt struct {
 type RpcHandler func(rc *RpcContext)
 type DispatchHash func(netpoll.Connection, *RpcRequestMessage) int
 
-func NewServer(opt *ServerOpt, ctx context.Context) (*Server, error) {
+func NewServer(listenAddr string, opt *ServerOpt, ctx context.Context) (*Server, error) {
 	s := &Server{
 		services: make(map[string]*serviceInfo),
 		conns:    make(map[netpoll.Connection]*SvrMuxConn),
@@ -58,7 +57,7 @@ func NewServer(opt *ServerOpt, ctx context.Context) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
-	s.listener, err = netpoll.CreateListener("tcp", s.opt.ListenAddr)
+	s.listener, err = netpoll.CreateListener("tcp", listenAddr)
 	if err != nil {
 		return nil, err
 	}

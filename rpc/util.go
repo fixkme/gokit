@@ -2,6 +2,8 @@ package rpc
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"net"
 	"strings"
 	"time"
@@ -9,16 +11,38 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
+func CheckInternalIPForRpcAddr(rpcAddr string) (string, error) {
+	if len(rpcAddr) == 0 {
+		return "", errors.New("rpc addr is empty")
+	}
+	idx := strings.LastIndex(rpcAddr, ":")
+	if idx < 0 {
+		return rpcAddr, nil
+	}
+	ipStr, portStr := rpcAddr[0:idx], rpcAddr[idx+1:]
+	ip := net.ParseIP(ipStr)
+	if !ip.IsLoopback() {
+		return rpcAddr, nil
+	}
+	internalIP, err := GetOneInnerIP()
+	if err != nil {
+		return "", err
+	} else if len(internalIP) == 0 {
+		return "", errors.New("GetInternalIP failed")
+	}
+	return fmt.Sprintf("%s:%s", internalIP, portStr), nil
+}
+
 // 获取本机内网IP
-func GetOneInnerIP() string {
+func GetOneInnerIP() (string, error) {
 	ips, err := GetInnerIPs()
 	if err != nil {
-		return ""
+		return "", err
 	}
 	if len(ips) > 0 {
-		return ips[0]
+		return ips[0], nil
 	}
-	return ""
+	return "", nil
 }
 
 // 获取本机所有内网IP
