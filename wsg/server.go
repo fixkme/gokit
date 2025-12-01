@@ -4,13 +4,14 @@ import (
 	"bufio"
 	"bytes"
 	"errors"
-	"fmt"
 	"io"
-	"math"
 	"net/http"
 
-	"github.com/fixkme/gokit/mlog"
 	"github.com/panjf2000/gnet/v2"
+)
+
+const (
+	maxPayloadSize = 64 << 20 // 用户数据大小上限 64M
 )
 
 type ServerOptions struct {
@@ -58,14 +59,13 @@ func (s *Server) OnShutdown(eng gnet.Engine) {
 }
 
 func (s *Server) OnOpen(c gnet.Conn) (out []byte, action gnet.Action) {
-	mlog.Info("%s connection opened", c.RemoteAddr().String())
 	conn := &Conn{Conn: c}
 	c.SetContext(conn)
 	return
 }
 
 func (s *Server) OnClose(c gnet.Conn, err error) (action gnet.Action) {
-	// gnet的OnClose无法区分是客户端退出还是server退出导致的关闭, 需要自己解决
+	// gnet的OnClose无法区分是客户端退出还是server退出导致的关闭, 需要用户自己解决
 	if cb := s.opt.OnClientClose; cb != nil {
 		if conn, ok := c.Context().(*Conn); ok {
 			cb(conn, err)
@@ -80,7 +80,6 @@ func (s *Server) OnTraffic(c gnet.Conn) (r gnet.Action) {
 	if !conn.upgraded {
 		datas, err := c.Next(-1)
 		if err != nil && err != io.ErrShortBuffer {
-			mlog.Error("conn.Next err:%v", err)
 			return gnet.Close
 		}
 		conn.buff = append(conn.buff, datas...)
@@ -118,7 +117,6 @@ func (s *Server) OnTraffic(c gnet.Conn) (r gnet.Action) {
 	var payload []byte
 	defer func() {
 		if err != nil && err != io.ErrShortBuffer {
-			mlog.Error("read ws msg err:%v", err)
 			if wsh = conn.wsHead; wsh != nil {
 				conn.wsHead = nil
 				wsHeadPool.Put(wsh)
@@ -153,6 +151,11 @@ func (s *Server) OnTraffic(c gnet.Conn) (r gnet.Action) {
 		}
 
 		if wsh.Length > 0 {
+			if int(wsh.Length)+len(conn.buff) > maxPayloadSize {
+				err = errors.New("payload too large")
+				ReplyWsError(c, 1009, err)
+				return gnet.Close
+			}
 			payload, err = c.Next(int(wsh.Length))
 			if err != nil {
 				if err != io.ErrShortBuffer {
@@ -172,10 +175,6 @@ func (s *Server) OnTraffic(c gnet.Conn) (r gnet.Action) {
 		} else if len(payload) > 0 {
 			if conn.buff == nil {
 				conn.buff = make([]byte, 0, len(payload))
-			} else {
-				if len(conn.buff)+len(payload) > math.MaxInt16 {
-					fmt.Println("datas too long")
-				}
 			}
 			conn.buff = append(conn.buff, payload...)
 			if wsh.Fin {

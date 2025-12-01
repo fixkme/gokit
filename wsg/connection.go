@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/fixkme/gokit/mlog"
 	"github.com/panjf2000/gnet/v2"
 	"github.com/panjf2000/gnet/v2/pkg/pool/byteslice"
 )
@@ -13,10 +12,10 @@ import (
 type Conn struct {
 	gnet.Conn
 	upgraded  bool
-	buff      []byte
 	wsHeadOk  bool
 	wsHeadLen int
 	wsHead    *WsHead
+	buff      []byte
 
 	session any
 	router  RoutingWorker
@@ -123,10 +122,9 @@ func (conn *Conn) Send(content []byte) (err error) {
 		return err
 	}
 	err = conn.AsyncWritev([][]byte{hbuff, content}, func(c gnet.Conn, err error) error {
-		if err != nil {
-			mlog.Error("ws Send by AsyncWritev error: %v", err)
-		}
 		byteslice.Put(hbuff)
+		// 根据gnet源码，写错误err可以在OnClose拿到并处理；
+		// 另外，gnet对这个回调回返的error并没有处理，只有返回nil
 		return nil
 	})
 	return
@@ -166,14 +164,14 @@ func (conn *Conn) processOpFrame(wsh *WsHead, payload []byte) (err error) {
 			ReplyWsError(conn, 1002, errInvalidControlFrame)
 			return errInvalidControlFrame
 		}
-		if len(payload) >= 2 {
-			statusCode := binary.BigEndian.Uint16(payload)
-			var reason string
-			if len(payload) > 2 {
-				reason = string(payload[2:])
-			}
-			mlog.Info("ws client close: %d, %s\n", statusCode, reason)
-		}
+		// if len(payload) >= 2 {
+		// 	statusCode := binary.BigEndian.Uint16(payload)
+		// 	var reason string
+		// 	if len(payload) > 2 {
+		// 		reason = string(payload[2:])
+		// 	}
+		// 	mlog.Info("ws client close: %d, %s\n", statusCode, reason)
+		// }
 		conn.innerSendWsOpFrame(OpClose, payload)
 		return errClientClosed
 	case OpPing:

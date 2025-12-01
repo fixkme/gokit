@@ -219,7 +219,7 @@ func ReplyHttpError(w io.Writer, r *http.Request, status int, reason string) {
 	p = append(p, "Content-Type: text/plain; charset=utf-8\r\n"...)
 	p = append(p, "Connection: close\r\n\r\n"...)
 	p = append(p, reason...)
-	fmt.Printf("ReplyHttpError cap %d, len: %d, %v\n", cap(p), len(p), string(p))
+	//fmt.Printf("ReplyHttpError cap %d, len: %d, %v\n", cap(p), len(p), string(p))
 	w.Write(p)
 }
 
