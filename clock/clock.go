@@ -2,10 +2,10 @@ package clock
 
 import (
 	"errors"
-	"fmt"
 	"sync/atomic"
 	"time"
 
+	"github.com/fixkme/gokit/mlog"
 	"github.com/fixkme/gokit/util"
 )
 
@@ -108,7 +108,7 @@ func (c *Clock) addTimer(timer *_Timer) {
 		level--
 		slot = _LEVEL_MASKS[level]
 	}
-	fmt.Printf("------------add timer [%d, %d, %d], when=%d, lastTime=%d, ticks:%d\n", timer.id, level, slot, timer.when, c.lastTime, ticks)
+	mlog.Debug("------------add timer [%d, %d, %d], when=%d, lastTime=%d, ticks:%d\n", timer.id, level, slot, timer.when, c.lastTime, ticks)
 	c.putTimer(level, slot, timer)
 }
 
@@ -153,7 +153,7 @@ func (c *Clock) trigger(nowMs int64) {
 		delete(c.locs, timer.id)
 		//触发
 		if timer.when <= nowMs {
-			fmt.Printf("------------timer trigger id:%d, when:%d, now:%d\n", timer.id, timer.when, nowMs)
+			mlog.Debug("------------timer trigger id:%d, when:%d, now:%d\n", timer.id, timer.when, nowMs)
 			//传递到期定时器
 			promise := &Promise{TimerId: timer.id, NowTs: nowMs, Data: timer.data}
 			if timer.batch != nil {
@@ -166,7 +166,7 @@ func (c *Clock) trigger(nowMs int64) {
 				}
 			}
 		} else {
-			fmt.Printf("timer adjust id:%d, when:%d, now:%d, now slot:%d\n", timer.id, timer.when, nowMs, c.slot[0])
+			mlog.Debug("timer adjust id:%d, when:%d, now:%d, now slot:%d\n", timer.id, timer.when, nowMs, c.slot[0])
 			// 重新加入时间轮, 一般是下一次tick
 			c.addTimer(timer)
 		}
