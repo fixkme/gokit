@@ -115,6 +115,11 @@ func (imp *RpcImp) RegisterServiceOnlyOne(serviceName string, cb func(rpcSrv Ser
 	return cb(imp.server, nodeName)
 }
 
+// 取消注册服务
+func (imp *RpcImp) UnregisterService(serviceName string) error {
+	return imp.etcd.UnregisterService(serviceName)
+}
+
 func (imp *RpcImp) Call(serviceName string, cb RPCReq) (proto.Message, error) {
 	addr, err := imp.etcd.GetService(serviceName)
 	if err != nil {
