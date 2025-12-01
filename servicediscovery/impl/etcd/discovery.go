@@ -52,7 +52,7 @@ func NewEtcdDiscovery(ctx context.Context, serviceGroup string, opt *EtcdOpt) (s
 		cli:         cli,
 		prefix:      prefix,
 		allServices: make(serviceContainer),
-		regServs:    make(map[string]string),
+		regServs:    sync.Map{},
 		rch:         nil,
 		ctx:         ctx,
 		leaseTTL:    opt.LeaseTTL,
@@ -83,12 +83,12 @@ type etcdImp struct {
 	prefix string
 	// 本集群所有services cache
 	allServices serviceContainer
+	mx          sync.RWMutex
 
 	// 自己已注册的服务
-	regServs map[string]string
+	regServs sync.Map
 	quit     atomic.Bool
 
-	mx  sync.RWMutex
 	ctx context.Context
 
 	// 等待etcd watch返回的管道
@@ -153,11 +153,12 @@ func (e *etcdImp) onStop() {
 	e.quit.Store(true)
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	for k := range e.regServs {
-		if _, err := e.cli.Delete(ctx, k); err != nil {
+	e.regServs.Range(func(key, value any) bool {
+		if _, err := e.cli.Delete(ctx, key.(string)); err != nil {
 			mlog.Warn("etcd stop, Delete key error:%v", err)
 		}
-	}
+		return true
+	})
 
 	// cli.Close()会触发e.rch close, 但是通过调用顺序规避了
 	if err := e.cli.Close(); err != nil {
@@ -191,7 +192,7 @@ func (e *etcdImp) putServiceKey(key string, rpcAddr string) error {
 		return err
 	}
 	mlog.Info("etcd PUT %s %s", key, rpcAddr)
-	e.regServs[key] = rpcAddr
+	e.regServs.Store(key, rpcAddr)
 	ch, err := e.cli.KeepAlive(e.ctx, resp.ID)
 	if err != nil {
 		return err
@@ -211,6 +212,21 @@ func (e *etcdImp) putServiceKey(key string, rpcAddr string) error {
 			}
 		}
 	}()
+	return nil
+}
+
+// UnregisterService 取消注册服务
+func (e *etcdImp) UnregisterService(serviceName string) (err error) {
+	e.regServs.Range(func(k, v any) bool {
+		key := k.(string)
+		if strings.Contains(key, serviceName) {
+			e.regServs.Delete(key)
+			if _, err = e.cli.Delete(e.ctx, key); err != nil {
+				e.regServs.Store(k, v)
+			}
+		}
+		return true
+	})
 	return nil
 }
 
@@ -278,10 +294,11 @@ func (e *etcdImp) onWatchEvent(evt *clientv3.Event) {
 		if e.delService(name, id) {
 			mlog.Info("etcd onWatchEvent delete (%s,%s)", name, id)
 		}
+
 		// 删除的是本节点服务，重新注册此服务（被删除的原因，可能是keepalive超时了）
-		if rpcAddr, ok := e.regServs[key]; ok && !e.quit.Load() {
+		if rpcAddr, ok := e.regServs.Load(key); ok && !e.quit.Load() {
 			mlog.Info("etcd OnWatchEvent register again, key:%s, rpcAddr:%s", key, rpcAddr)
-			if err := e.putServiceKey(key, rpcAddr); err != nil {
+			if err := e.putServiceKey(key, rpcAddr.(string)); err != nil {
 				mlog.Error("etcd onWatchEvent putServiceKey err:%v", err)
 			}
 		}

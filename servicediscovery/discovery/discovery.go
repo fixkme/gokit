@@ -9,6 +9,8 @@ type Discovery interface {
 
 	RegisterService(serviceName string, rpcAddr string) (string, error)
 
+	UnregisterService(serviceName string) error
+
 	GetService(serviceName string) (rpcAddr string, err error)
 
 	GetAllService(serviceName string) (rpcAddrs map[string]string, err error)
