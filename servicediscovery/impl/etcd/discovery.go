@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"maps"
 	"math/rand"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -219,7 +220,8 @@ func (e *etcdImp) putServiceKey(key string, rpcAddr string) error {
 func (e *etcdImp) UnregisterService(serviceName string) (err error) {
 	e.regServs.Range(func(k, v any) bool {
 		key := k.(string)
-		if strings.Contains(key, serviceName) {
+		ss := strings.Split(key, ":")
+		if slices.Index(ss, serviceName) >= 0 {
 			e.regServs.Delete(key)
 			if _, err = e.cli.Delete(e.ctx, key); err != nil {
 				e.regServs.Store(k, v)
