@@ -37,7 +37,7 @@ func NewRpc(pctx context.Context, rpcAddr, serviceGroup string, etcdConf *etcd.E
 		cancel()
 		return nil, err
 	}
-	server, err := NewServer(rpcAddr, serverOpt, ctx)
+	server, err := NewServer(serverOpt, ctx)
 	if err != nil {
 		cancel()
 		return nil, err

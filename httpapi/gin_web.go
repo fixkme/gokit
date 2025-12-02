@@ -75,7 +75,7 @@ func (s *Server) regWebRouter() {
 	v0.GET("/myip", s.myIPHandler)
 	v0.POST("/myip", s.myIPHandler)
 
-	v1 := s.Router.Group("/v1")
+	v1 := s.Router.Group("/api")
 	v1.Any("/:service/:pathname", s.httpHandler)
 }
 

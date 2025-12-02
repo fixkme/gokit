@@ -30,6 +30,7 @@ type Server struct {
 }
 
 type ServerOpt struct {
+	ListenAddr        string //在某些情况不能和rpcAddr一样，比如域名、k8s service，所以单独控制
 	PollerNum         int
 	PollOpts          []netpoll.Option
 	ProcessorSize     int64
@@ -42,7 +43,7 @@ type ServerOpt struct {
 type RpcHandler func(rc *RpcContext)
 type DispatchHash func(netpoll.Connection, *RpcRequestMessage) int
 
-func NewServer(listenAddr string, opt *ServerOpt, ctx context.Context) (*Server, error) {
+func NewServer(opt *ServerOpt, ctx context.Context) (*Server, error) {
 	s := &Server{
 		services: make(map[string]*serviceInfo),
 		conns:    make(map[netpoll.Connection]*SvrMuxConn),
@@ -57,7 +58,7 @@ func NewServer(listenAddr string, opt *ServerOpt, ctx context.Context) (*Server,
 	if err != nil {
 		return nil, err
 	}
-	s.listener, err = netpoll.CreateListener("tcp", listenAddr)
+	s.listener, err = netpoll.CreateListener("tcp", opt.ListenAddr)
 	if err != nil {
 		return nil, err
 	}
