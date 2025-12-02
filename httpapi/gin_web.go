@@ -26,7 +26,7 @@ type Server struct {
 	Router    *gin.Engine
 }
 
-func NewWeb(network, addr string, rpcClient rpc.RpcClient) (*Server, error) {
+func NewWeb(network, addr string, rpcClient rpc.RpcClient, middleware ...gin.HandlerFunc) (*Server, error) {
 	ln, err := net.Listen(network, addr)
 	if err != nil {
 		return nil, err
@@ -34,7 +34,9 @@ func NewWeb(network, addr string, rpcClient rpc.RpcClient) (*Server, error) {
 
 	setMode()
 	engine := gin.New()
-	engine.Use(gin.Recovery())
+	if len(middleware) > 0 {
+		engine.Use(middleware...)
+	}
 
 	return &Server{
 		rpcClient: rpcClient,
