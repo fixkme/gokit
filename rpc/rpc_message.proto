@@ -13,7 +13,7 @@ message Meta {
 }
 
 message RpcRequestMessage {
-    uint32 seq = 1;
+    fixed32 seq = 1;
     string serviceName = 2;
     string methodName = 3;
     Meta md = 4;
@@ -21,7 +21,7 @@ message RpcRequestMessage {
 }
 
 message RpcResponseMessage {
-    uint32 seq = 1;
+    fixed32 seq = 1;
     int32 ecode = 2;
     string error = 3;
     Meta md = 4;
