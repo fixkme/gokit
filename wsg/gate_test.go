@@ -50,13 +50,28 @@ func TestWsClient(t *testing.T) {
 }
 
 func client(id int) {
-	conn, err := net.DialTimeout("tcp", "127.0.0.1:7070", time.Second)
+	host := "127.0.0.1:7070"              // 服务端地址
+	localIP := "127.0.0.1"                // 本地IP地址
+	localPort := strconv.Itoa(54680 + id) // 本地端口
+
+	// 解析本地地址
+	localAddr, err := net.ResolveTCPAddr("tcp", net.JoinHostPort(localIP, localPort))
+	if err != nil {
+		panic(err)
+	}
+	// 创建自定义Dialer
+	dialer := &net.Dialer{
+		LocalAddr: localAddr,
+		Timeout:   1 * time.Second,
+	}
+	conn, err := dialer.Dial("tcp", host)
 	if err != nil {
 		panic(err)
 	}
 	key, _ := generateWebSocketKey()
-	content := "GET /chat HTTP/1.1\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: " + key + "\r\n" +
-		"x-player-id: " + strconv.Itoa(id) + "\r\n\r\n"
+	contentFormat := "GET /ws?x-account=acc_test_%d HTTP/1.1\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: %s\r\n" +
+		"Host: %s\r\n" + "x-encrypted: false\r\n" + "x-debug-player-id: %d\r\n\r\n"
+	content := fmt.Sprintf(contentFormat, id, key, host, id)
 	if _, err = conn.Write([]byte(content)); err != nil {
 		panic(err)
 	}
@@ -148,9 +163,14 @@ func (r *_RoutingWorkerImp) DoTask(task *_RoutingTask) {
 }
 
 func (r *_RoutingWorkerImp) PushData(session any, datas []byte) {
-	r.tasks <- &_RoutingTask{
+	task := &_RoutingTask{
 		Cli:   session.(*_WsClient),
 		Datas: datas,
+	}
+	select {
+	case r.tasks <- task:
+	default:
+		fmt.Println("routing task queue is full")
 	}
 }
 

@@ -3,7 +3,6 @@ package wsg
 import (
 	"encoding/binary"
 	"errors"
-	"fmt"
 	"io"
 	"net/http"
 	"strconv"
@@ -13,10 +12,15 @@ import (
 )
 
 var (
-	errBadWriteOpCode      = errors.New("websocket: bad write message type")
-	errWriteClosed         = errors.New("websocket: write closed")
-	errInvalidControlFrame = errors.New("websocket: invalid control frame")
-	errClientClosed        = errors.New("client ws closed") //客户端主动关闭
+	errWriteClosed            = errors.New("websocket: write closed")
+	errInvalidControlFrame    = errors.New("websocket: invalid control frame")
+	errHandshakeDataTooLarge  = errors.New("handshake data too large")
+	errHandshakeSendFrameData = errors.New("websocket: client sent data before handshake is complete")
+	errHeaderLengthUnexpected = errors.New("ErrHeaderLengthUnexpected")
+	errHeaderLengthMSB        = errors.New("ErrHeaderLengthMSB")
+	errNotSupportTextData     = errors.New("not support text data")
+	errPayloadTooLarge        = errors.New("payload too large")
+	errClientClosed           = errors.New("client ws closed") //客户端主动关闭
 )
 
 const (
@@ -95,7 +99,7 @@ func ReadWsHeader(r io.Reader) (h *WsHead, err error) {
 		extra += 8
 
 	default:
-		err = fmt.Errorf("ErrHeaderLengthUnexpected")
+		err = errHeaderLengthUnexpected
 		return
 	}
 
@@ -116,7 +120,7 @@ func ReadWsHeader(r io.Reader) (h *WsHead, err error) {
 
 	case length == 127:
 		if bts[0]&0x80 != 0 {
-			err = fmt.Errorf("ErrHeaderLengthMSB")
+			err = errHeaderLengthMSB
 			return
 		}
 		h.Length = int64(binary.BigEndian.Uint64(bts[:8]))
@@ -161,7 +165,7 @@ func MakeWsHeadBuff(h *WsHead) (buff []byte, err error) {
 		n = 10
 
 	default:
-		return nil, fmt.Errorf("ErrHeaderLengthUnexpected")
+		return nil, errHeaderLengthUnexpected
 	}
 
 	if h.Masked {
@@ -174,7 +178,7 @@ func MakeWsHeadBuff(h *WsHead) (buff []byte, err error) {
 
 func MakeWsClosePayload(statusCode uint16, reason string) ([]byte, error) {
 	if len(reason) > 123 {
-		return nil, fmt.Errorf("ErrCloseReasonTooLong")
+		return nil, errors.New("ErrCloseReasonTooLong")
 	}
 	p := make([]byte, 2+len(reason))
 	binary.BigEndian.PutUint16(p[:2], 1002)

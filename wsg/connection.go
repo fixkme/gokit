@@ -2,8 +2,8 @@ package wsg
 
 import (
 	"encoding/binary"
-	"fmt"
 	"io"
+	"sync/atomic"
 
 	"github.com/panjf2000/gnet/v2"
 	"github.com/panjf2000/gnet/v2/pkg/pool/byteslice"
@@ -11,14 +11,26 @@ import (
 
 type Conn struct {
 	gnet.Conn
-	upgraded  bool
+	upgraded  atomic.Bool
+	isUpgrade bool
 	wsHeadOk  bool
 	wsHeadLen int
 	wsHead    *WsHead
 	buff      []byte
 
+	qnode atomic.Pointer[hsQNode]
+
 	session any
 	router  RoutingWorker
+}
+
+func newConn(c gnet.Conn) *Conn {
+	conn := &Conn{
+		Conn: c,
+	}
+	conn.upgraded.Store(false)
+	conn.qnode.Store(nil)
+	return conn
 }
 
 func (conn *Conn) BindRoutingWorker(r RoutingWorker) {
@@ -33,15 +45,23 @@ func (conn *Conn) GetSession() any {
 	return conn.session
 }
 
-func (conn *Conn) ReadWsHeader(c gnet.Conn) (headOk bool, err error) {
-	var bts []byte
+func (conn *Conn) IsUpgraded() bool {
+	return conn.upgraded.Load()
+}
+
+func (conn *Conn) ReadWsHeader() (headOk bool, err error) {
+	c := conn.Conn
 	const front = 2
+	var bts []byte
 	var payloadLen byte
 	var h *WsHead
 	if conn.wsHeadLen == 0 {
 		bts, err = c.Peek(front)
 		if err != nil {
-			return false, nil
+			if err == io.ErrShortBuffer {
+				return false, nil
+			}
+			return false, err
 		}
 
 		h = wsHeadPool.Get()
@@ -64,7 +84,7 @@ func (conn *Conn) ReadWsHeader(c gnet.Conn) (headOk bool, err error) {
 		case payloadLen == 127:
 			extra += 8
 		default:
-			err = fmt.Errorf("ErrHeaderLengthUnexpected")
+			err = errHeaderLengthUnexpected
 			return
 		}
 
@@ -94,7 +114,7 @@ func (conn *Conn) ReadWsHeader(c gnet.Conn) (headOk bool, err error) {
 
 	case payloadLen == 127:
 		if bts[0]&0x80 != 0 {
-			err = fmt.Errorf("ErrHeaderLengthMSB")
+			err = errHeaderLengthMSB
 			return
 		}
 		h.Length = int64(binary.BigEndian.Uint64(bts[:8]))

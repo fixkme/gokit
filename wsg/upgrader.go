@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
-	"time"
 	"unicode/utf8"
 )
 
@@ -19,8 +18,6 @@ type HandshakeError struct {
 func (e HandshakeError) Error() string { return e.message }
 
 type Upgrader struct {
-	HandshakeTimeout time.Duration
-
 	Subprotocols []string
 
 	CheckOrigin func(r *http.Request) bool
@@ -176,15 +173,8 @@ func (u *Upgrader) Upgrade(conn *Conn, r *http.Request, responseHeader http.Head
 	// }
 	// p = append(p, "\r\n"...)
 
-	if u.HandshakeTimeout > 0 {
-		w.SetWriteDeadline(time.Now().Add(u.HandshakeTimeout))
-	}
 	if _, err := w.Write(p); err != nil {
 		return err
-	}
-	if u.HandshakeTimeout > 0 {
-		// Clear deadlines.
-		w.SetWriteDeadline(time.Time{})
 	}
 
 	return nil

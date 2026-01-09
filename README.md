@@ -1,7 +1,25 @@
-#### 后端kit
+#### 后端kit，旨在快速构建游戏后端
+
+##### 功能介绍
+1. wsg: 用gnet实现的websocket gate server
+   * 有限数量的协程处理io，支持跨协程路由数据，也支持在本io协程路由
+   * 不支持压缩，因为RFC 6455只是把压缩作为可选功能，另外现在数据都是protobuf，有一定带宽的优化，并且可以在用户层进行压缩解压数据
+2. rpc: 用netpoll实现的rpc server和client
+   * 需要结合[protoc-gen-gom](https://github.com/fixkme/protoc-gen-gom)生成代码
+   * 客户端支持异步调用和同步调用，超时处理
+3. httpapi: 用gin实现http api 路由，通过rpc调用逻辑服务
+4. servicediscovery: 服务发现
+5. clock: 多层时间轮的定时器实现
+6. errs: Code+error封装的错误码
+7. ds: 数据结构
+    * staticlist: 静态链表实现的FIFO队列，支持O(1)时间删除任意元素
+8. util: 工具系列
+    * time: 设置时区，修改时间，以及一系列跨天、跨周、跨月接口
+
+##### 实践例子
+1. 本人开发的黑白棋[othello](https://github.com/fixkme/othello)
 
 ##### 待解决和优化
 1. netpoll rpc server和client 写操作要不要用写协程替换mutex
 2. netpoll rpc client 怎么在真正写入fd的时候，将RST Broken pipe错误告知用户的callResult和AsyncCallResult
 3. netpoll rpc client 增加CallAll方法 
-4. ws gate server compression 实现
