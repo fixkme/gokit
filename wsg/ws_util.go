@@ -181,7 +181,7 @@ func MakeWsClosePayload(statusCode uint16, reason string) ([]byte, error) {
 		return nil, errors.New("ErrCloseReasonTooLong")
 	}
 	p := make([]byte, 2+len(reason))
-	binary.BigEndian.PutUint16(p[:2], 1002)
+	binary.BigEndian.PutUint16(p[:2], statusCode)
 	p = append(p, reason...)
 	return p, nil
 }
