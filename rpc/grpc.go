@@ -47,7 +47,7 @@ func NewGRPCer(ctx context.Context, grpcAddr string, serviceGroup string, etcdCo
 	if err != nil {
 		return nil, err
 	}
-	mlog.Info("gRPC listen: %s", netListen.Addr())
+	mlog.Infof("gRPC listen: %s", netListen.Addr())
 
 	etcds, err := etcd.NewEtcdDiscovery(ctx, serviceGroup, etcdConf)
 	if err != nil {
@@ -56,7 +56,7 @@ func NewGRPCer(ctx context.Context, grpcAddr string, serviceGroup string, etcdCo
 
 	opts := []grpc_recovery.Option{
 		grpc_recovery.WithRecoveryHandler(func(p interface{}) (err error) {
-			mlog.Error("gRPC调用出错 panic: %v", p)
+			mlog.Errorf("gRPC调用出错 panic: %v", p)
 			return status.Errorf(1002, "服务器内部错误")
 		}),
 	}
@@ -136,7 +136,7 @@ func (imp *grpcerImp) call(addr string, cb GRPCReq) (proto.Message, error) {
 	imp.cliMx.RUnlock()
 	if !ok {
 		if conn, err = imp.connectTo(addr); nil != err {
-			mlog.Error("call, imp.connectTo err:%v", err)
+			mlog.Errorf("call, imp.connectTo err:%v", err)
 			return nil, err
 		}
 	}
@@ -153,7 +153,7 @@ func (imp *grpcerImp) CallAll(serviceName string, cb GRPCReq) ([]proto.Message, 
 	for _, addr := range addrs {
 		p, err := imp.call(addr, cb)
 		if nil != err {
-			mlog.Error("CallAll, imp.call err:%v", err)
+			mlog.Errorf("CallAll, imp.call err:%v", err)
 			// return nil, err
 		}
 		rsps = append(rsps, p)
@@ -162,7 +162,7 @@ func (imp *grpcerImp) CallAll(serviceName string, cb GRPCReq) ([]proto.Message, 
 }
 
 func (imp *grpcerImp) connectTo(addr string) (*grpc.ClientConn, error) {
-	mlog.Debug("find target %s, dail right now", addr)
+	mlog.Debugf("find target %s, dail right now", addr)
 	ctx, cancel := context.WithTimeout(imp.ctx, ClientTimeout)
 	defer cancel()
 	conn, err := grpc.DialContext(ctx, addr, grpc.WithInsecure(), grpc.WithBlock(), grpc.WithKeepaliveParams(keepalive.ClientParameters{
@@ -185,17 +185,17 @@ func (imp *grpcerImp) connectTo(addr string) (*grpc.ClientConn, error) {
 	imp.grpcCli[addr] = conn
 	imp.cliMx.Unlock()
 
-	mlog.Info("target %s rpc client cached", addr)
+	mlog.Infof("target %s rpc client cached", addr)
 
 	go func() {
 		defer func() {
 			if r := recover(); r != nil {
-				mlog.Error("gRPC connectTo recover error %v", r)
+				mlog.Errorf("gRPC connectTo recover error %v", r)
 			}
 		}()
 		for {
 			if conn.GetState() == connectivity.Shutdown || conn.GetState() == connectivity.TransientFailure {
-				mlog.Info("target %s rpc client %v", addr, conn.GetState())
+				mlog.Infof("target %s rpc client %v", addr, conn.GetState())
 				imp.cliMx.Lock()
 				defer imp.cliMx.Unlock()
 				delete(imp.grpcCli, addr)
@@ -204,7 +204,7 @@ func (imp *grpcerImp) connectTo(addr string) (*grpc.ClientConn, error) {
 			}
 			oldState := conn.GetState()
 			conn.WaitForStateChange(imp.ctx, conn.GetState())
-			mlog.Info("grpc conn change,target addr:%v, oldState:%v, newState:%v", addr, oldState, conn.GetState())
+			mlog.Infof("grpc conn change,target addr:%v, oldState:%v, newState:%v", addr, oldState, conn.GetState())
 		}
 	}()
 
@@ -261,7 +261,7 @@ func (imp *grpcerImp) Stop() {
 	imp.cliMx.Lock()
 	for addr, conn := range imp.grpcCli {
 		conn.Close()
-		mlog.Info("close addr %v grpc connection", addr)
+		mlog.Infof("close addr %v grpc connection", addr)
 	}
 	imp.cliMx.Unlock()
 	imp.wg.Wait()

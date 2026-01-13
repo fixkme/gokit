@@ -59,7 +59,7 @@ func (imp *RpcImp) Run() error {
 	go func() {
 		err := <-errCh
 		if err != nil {
-			mlog.Error("RpcImp etcd error: %v", err)
+			mlog.Errorf("RpcImp etcd error: %v", err)
 			imp.cancel()
 			imp.server.Stop(context.Background())
 		}
@@ -80,7 +80,7 @@ func (imp *RpcImp) Stop() error {
 	// 关闭client
 	for _, cli := range imp.clients {
 		if err := cli.Close(); err != nil {
-			mlog.Error("RpcImp cli.Close error: %v", err)
+			mlog.Errorf("RpcImp cli.Close error: %v", err)
 		}
 	}
 	// 停止server
@@ -149,13 +149,13 @@ func (imp *RpcImp) CallAll(serviceName string, cb RPCReq) ([]proto.Message, erro
 		imp.cliMtx.RUnlock()
 		if !ok {
 			if cli, err = imp.connectTo(addr); nil != err {
-				mlog.Error("CallAll [%s,%s] connect err:%v", serviceName, addr, err)
+				mlog.Errorf("CallAll [%s,%s] connect err:%v", serviceName, addr, err)
 				continue
 			}
 		}
 		rsp, err := cb(imp.ctx, cli)
 		if err != nil {
-			mlog.Error("CallAll [%s,%s] cb err:%v", serviceName, addr, err)
+			mlog.Errorf("CallAll [%s,%s] cb err:%v", serviceName, addr, err)
 		} else {
 			rsps = append(rsps, rsp)
 		}
@@ -167,7 +167,7 @@ func (imp *RpcImp) connectTo(rpcAddr string) (*ClientConn, error) {
 	opt := &ClientOpt{
 		DailTimeout: time.Second * 3,
 		OnClientClose: func(conn netpoll.Connection) error {
-			mlog.Info("%s rpc client is Closed", conn.RemoteAddr().String())
+			mlog.Infof("%s rpc client is Closed", conn.RemoteAddr().String())
 			return nil
 		},
 	}

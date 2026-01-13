@@ -50,11 +50,11 @@ func (s *Server) Start() {
 	go func() {
 		defer func() {
 			if r := recover(); r != nil {
-				mlog.Warn("web recover error: %v.", r)
+				mlog.Warnf("web recover error: %v.", r)
 			}
 		}()
 		if err := s.Run(); err != nil {
-			mlog.Warn("web run error: %v", err)
+			mlog.Warnf("web run error: %v", err)
 		}
 	}()
 }
@@ -66,7 +66,7 @@ func (s *Server) Run() (err error) {
 
 func (s *Server) Stop() {
 	if err := s.Ln.Close(); err != nil {
-		mlog.Warn("web stop error %v", err)
+		mlog.Warnf("web stop error %v", err)
 	}
 }
 
@@ -87,7 +87,7 @@ func (s *Server) httpHandler(c *gin.Context) {
 	serviceName = strings.ToLower(serviceName)
 	methodName = strings.ToLower(methodName)
 	httpMethod = strings.ToLower(httpMethod)
-	mlog.Debug("httpHandler HttpMethod:%s Content-Type:%s URL:%s, serviceName:%s, methodName:%s", httpMethod, c.ContentType(), c.Request.URL, serviceName, methodName)
+	mlog.Debugf("httpHandler HttpMethod:%s Content-Type:%s URL:%s, serviceName:%s, methodName:%s", httpMethod, c.ContentType(), c.Request.URL, serviceName, methodName)
 
 	req, resp, err := s.makeMsg(serviceName, methodName)
 	if err != nil {
@@ -108,7 +108,7 @@ func (s *Server) httpHandler(c *gin.Context) {
 	} else {
 		if err := c.Bind(req); nil != err {
 			Response(c, http.StatusBadRequest, &ResponseResult{Ecode: 2302})
-			mlog.Warn("HTTP request bind json error: %s", err)
+			mlog.Warnf("HTTP request bind json error: %s", err)
 			return
 		}
 	}
@@ -119,7 +119,7 @@ func (s *Server) httpHandler(c *gin.Context) {
 	})
 	if err != nil {
 		errCode, errDesc := parserError(err)
-		mlog.Debug("HTTP(%s %s/%s) call RPC error: %s %d|%s", serviceName, methodName, httpMethod, err, errCode, errDesc)
+		mlog.Debugf("HTTP(%s %s/%s) call RPC error: %s %d|%s", serviceName, methodName, httpMethod, err, errCode, errDesc)
 		Response(c, http.StatusInternalServerError, &ResponseResult{Ecode: errCode, Data: resp, Error: errDesc})
 		return
 	}
@@ -156,7 +156,7 @@ func (s *Server) myIPHandler(c *gin.Context) {
 // 利用form-data填充req结构
 func fillReqUsingFormData(c *gin.Context, req proto.Message) error {
 	if form, err := c.MultipartForm(); err != nil {
-		mlog.Error("解析multipart-form失败.%s   url.%s", err, c.Request.URL.Path)
+		mlog.Errorf("解析multipart-form失败.%s   url.%s", err, c.Request.URL.Path)
 		return errors.New("parse multipart form failed")
 	} else {
 		refValue := reflect.ValueOf(req).Elem() // 拿到值反射 无论是值还是类型均是指针类型
@@ -177,12 +177,12 @@ func fillReqUsingFormData(c *gin.Context, req proto.Message) error {
 				continue
 			}
 			if !node.CanAddr() {
-				mlog.Warn("pb中feild.%s 接受文件但未非指针类型，意料之外 path.%s", k, c.Request.URL.Path)
+				mlog.Warnf("pb中feild.%s 接受文件但未非指针类型，意料之外 path.%s", k, c.Request.URL.Path)
 				continue
 			}
 			field, ok := refType.FieldByName(strings.Title(k)) // 拿到类型域
 			if !ok || field.Type.Kind() != reflect.Ptr {
-				mlog.Warn("pb中feild.%s ok.%v 接受文件但获得类型失败，意料之外 path.%s", k, ok, c.Request.URL.Path)
+				mlog.Warnf("pb中feild.%s ok.%v 接受文件但获得类型失败，意料之外 path.%s", k, ok, c.Request.URL.Path)
 				continue
 			}
 
@@ -190,19 +190,19 @@ func fillReqUsingFormData(c *gin.Context, req proto.Message) error {
 			file := val.Elem()                    // 拿到文件
 			content := reflect.Indirect(file).FieldByName("Content")
 			if !content.IsValid() {
-				mlog.Warn("pb中feild.%s 接受文件但未包含Content域 path.%s", k, c.Request.URL.Path)
+				mlog.Warnf("pb中feild.%s 接受文件但未包含Content域 path.%s", k, c.Request.URL.Path)
 				continue
 			}
 			name := reflect.Indirect(file).FieldByName("Name")
 			if !name.IsValid() {
-				mlog.Warn("pb中feild.%s 接受文件但未包含Name域 path.%s", k, c.Request.URL.Path)
+				mlog.Warnf("pb中feild.%s 接受文件但未包含Name域 path.%s", k, c.Request.URL.Path)
 				continue
 			}
 			if file, err := v[0].Open(); err != nil {
-				mlog.Error("打开.%s 文件失败.%s path.%s", k, err, c.Request.URL.Path)
+				mlog.Errorf("打开.%s 文件失败.%s path.%s", k, err, c.Request.URL.Path)
 				continue
 			} else if byts, err := io.ReadAll(file); err != nil {
-				mlog.Error("读取.%s 文件数据失败.%s path.%s", k, err, c.Request.URL.Path)
+				mlog.Errorf("读取.%s 文件数据失败.%s path.%s", k, err, c.Request.URL.Path)
 				continue
 			} else {
 				content.SetBytes(byts)

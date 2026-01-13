@@ -35,6 +35,6 @@ func TestEtcd(t *testing.T) {
 	etcd.RegisterService("myself", "127.0.0.1:8080")
 	select {
 	case err := <-errch:
-		mlog.Error("etcd stopped %v", err)
+		mlog.Errorf("etcd stopped %v", err)
 	}
 }

@@ -105,7 +105,7 @@ func (app *App) stop() {
 	// 先进后出
 	for i := len(app.mods) - 1; i >= 0; i-- {
 		m := app.mods[i]
-		mlog.Info("app stop module %s", m.mi.Name())
+		mlog.Infof("app stop module %s", m.mi.Name())
 		destroy(m)
 	}
 	app.wg.Wait()
@@ -121,7 +121,7 @@ func run(m *mod, wg *sync.WaitGroup) {
 func destroy(m *mod) {
 	defer func() {
 		if r := recover(); r != nil {
-			mlog.Error("%s module destroy panic: %v\n%s", m.mi.Name(), r, debug.Stack())
+			mlog.Errorf("%s module destroy panic: %v\n%s", m.mi.Name(), r, debug.Stack())
 		}
 	}()
 
@@ -134,7 +134,7 @@ func (app *App) Run(mods ...Module) {
 	for {
 		signal.Notify(c, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
 		sig := <-c
-		mlog.Info("server closing down (signal: %v)", sig)
+		mlog.Infof("server closing down (signal: %v)", sig)
 		if sig != syscall.SIGHUP {
 			break
 		}

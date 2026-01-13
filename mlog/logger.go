@@ -6,8 +6,21 @@ import (
 )
 
 type Logger interface {
-	Logf(level Level, format string, args ...interface{})
-	IsLevelEnabled(level Level) bool
+	Trace(v ...any)
+	Debug(v ...any)
+	Info(v ...any)
+	Notice(v ...any)
+	Warn(v ...any)
+	Error(v ...any)
+	Fatal(v ...any)
+
+	Tracef(format string, v ...any)
+	Debugf(format string, v ...any)
+	Infof(format string, v ...any)
+	Noticef(format string, v ...any)
+	Warnf(format string, v ...any)
+	Errorf(format string, v ...any)
+	Fatalf(format string, v ...any)
 }
 
 var logger Logger
@@ -29,39 +42,109 @@ func UseDefaultLogger(ctx context.Context, wg *sync.WaitGroup, path string, logN
 type Level uint32
 
 const (
-	PanicLevel Level = iota
-	FatalLevel
+	FatalLevel Level = iota
 	ErrorLevel
 	WarnLevel
+	NoticeLevel
 	InfoLevel
 	DebugLevel
 	TraceLevel
 )
 
-func Debug(format string, a ...interface{}) {
+func Trace(a ...any) {
 	if logger == nil {
 		return
 	}
-	logger.Logf(DebugLevel, format, a...)
+	logger.Trace(a...)
 }
 
-func Info(format string, a ...interface{}) {
+func Tracef(format string, a ...any) {
 	if logger == nil {
 		return
 	}
-	logger.Logf(InfoLevel, format, a...)
+	logger.Tracef(format, a...)
 }
 
-func Warn(format string, a ...interface{}) {
+func Debug(a ...any) {
 	if logger == nil {
 		return
 	}
-	logger.Logf(WarnLevel, format, a...)
+	logger.Debug(a...)
 }
 
-func Error(format string, a ...interface{}) {
+func Debugf(format string, a ...any) {
 	if logger == nil {
 		return
 	}
-	logger.Logf(ErrorLevel, format, a...)
+	logger.Debugf(format, a...)
+}
+
+func Info(a ...any) {
+	if logger == nil {
+		return
+	}
+	logger.Info(a...)
+}
+
+func Infof(format string, a ...any) {
+	if logger == nil {
+		return
+	}
+	logger.Infof(format, a...)
+}
+
+func Notice(a ...any) {
+	if logger == nil {
+		return
+	}
+	logger.Notice(a...)
+}
+
+func Noticef(format string, a ...any) {
+	if logger == nil {
+		return
+	}
+	logger.Noticef(format, a...)
+}
+
+func Warn(a ...any) {
+	if logger == nil {
+		return
+	}
+	logger.Warn(a...)
+}
+
+func Warnf(format string, a ...any) {
+	if logger == nil {
+		return
+	}
+	logger.Warnf(format, a...)
+}
+
+func Error(a ...any) {
+	if logger == nil {
+		return
+	}
+	logger.Error(a...)
+}
+
+func Errorf(format string, a ...any) {
+	if logger == nil {
+		return
+	}
+	logger.Errorf(format, a...)
+}
+
+func Fatal(a ...any) {
+	if logger == nil {
+		return
+	}
+	logger.Fatal(a...)
+}
+
+func Fatalf(format string, a ...any) {
+	if logger == nil {
+		return
+	}
+	logger.Fatalf(format, a...)
 }

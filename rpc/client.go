@@ -215,11 +215,11 @@ func (c *ClientConn) asyncWrite(buffer *netpoll.LinkBuffer) error {
 		}
 	}
 	if err := c.conn.Writer().Append(buffer); err != nil {
-		mlog.Error("rpc client conn Append err:%v", err)
+		mlog.Errorf("rpc client conn Append err:%v", err)
 		return err
 	}
 	if err := c.conn.Writer().Flush(); err != nil {
-		mlog.Error("rpc client conn Flush err:%v", err)
+		mlog.Errorf("rpc client conn Flush err:%v", err)
 		return err
 	}
 	return nil
@@ -251,7 +251,7 @@ func (c *ClientConn) decodeRpcRsp(rpcRsp *RpcResponseMessage, out proto.Message)
 	}
 	if out != nil {
 		if err = c.opt.Unmarshaler.Unmarshal(rpcRsp.Payload, out); err != nil {
-			mlog.Error("rpc client failed to unmarshal response: %v", err)
+			mlog.Errorf("rpc client failed to unmarshal response: %v", err)
 			return
 		}
 	}
@@ -261,7 +261,7 @@ func (c *ClientConn) decodeRpcRsp(rpcRsp *RpcResponseMessage, out proto.Message)
 
 func (cli *ClientConn) onRecvMsg(_ context.Context, conn netpoll.Connection) (err error) {
 	reader := conn.Reader()
-	mlog.Debug("client read buffer before size:%d", reader.Len())
+	mlog.Debugf("client read buffer before size:%d", reader.Len())
 	// defer func() {
 	// 	mlog.Debug("%d client read buffer surplus size:%d", util.GoroutineID(), reader.Len())
 	// }()
@@ -291,10 +291,10 @@ func (cli *ClientConn) onRecvMsg(_ context.Context, conn netpoll.Connection) (er
 		// 反序列化
 		msg := &RpcResponseMessage{}
 		if err = rpcMsgUnmarshaler.Unmarshal(packetBuf, msg); err != nil {
-			mlog.Error("proto.Unmarshal RpcRequestMessage err:%v\n", err)
+			mlog.Errorf("proto.Unmarshal RpcRequestMessage err:%v\n", err)
 			return err
 		}
-		mlog.Debug("recv RpcResponseMessage msgId:%v", msg.Seq)
+		mlog.Debugf("recv RpcResponseMessage msgId:%v", msg.Seq)
 
 		cli.mtx.Lock()
 		callInfo, ok := cli.waitRsps[msg.Seq]
@@ -326,7 +326,7 @@ func (cli *ClientConn) onRecvMsg(_ context.Context, conn netpoll.Connection) (er
 				}
 				select {
 				case callInfo.asyncRet <- asyncRet:
-					mlog.Debug("async call push result msgId:%v", msg.Seq)
+					mlog.Debugf("async call push result msgId:%v", msg.Seq)
 				default:
 					mlog.Error("async call result chan is full!!!")
 					callInfo.asyncRet <- asyncRet
@@ -420,11 +420,11 @@ func (c *ClientConn) processTimeout() {
 func (c *ClientConn) reconnect() error {
 	conn, err := netpoll.DialConnection(c.network, c.address, c.opt.DailTimeout)
 	if err != nil {
-		mlog.Error("reconnect, rpc client Dial error %v", err)
+		mlog.Errorf("reconnect, rpc client Dial error %v", err)
 		return err
 	} else {
 		if err := c.conn.Close(); err != nil {
-			mlog.Error("reconnect, rpc client Close error %v", err)
+			mlog.Errorf("reconnect, rpc client Close error %v", err)
 		}
 		c.initConn(conn)
 	}

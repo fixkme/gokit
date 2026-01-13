@@ -124,7 +124,7 @@ func (s *Server) Stop(ctx context.Context) error {
 	s.listener.Close()
 	for c := range s.conns {
 		if err := c.Close(); err != nil {
-			mlog.Error("rpc conn close error %v", err)
+			mlog.Errorf("rpc conn close error %v", err)
 		}
 	}
 	close(s.quit)
@@ -207,7 +207,7 @@ func (s *Server) prepare(conn netpoll.Connection) context.Context {
 	mc := newSvrMuxConn(conn)
 	s.conns[conn] = mc
 	conn.AddCloseCallback(func(c netpoll.Connection) error {
-		mlog.Debug("server conn closed %v", c == conn)
+		mlog.Debugf("server conn closed %v", c == conn)
 		delete(s.conns, c)
 		return nil
 	})
@@ -219,20 +219,20 @@ func (s *Server) onMsg(ctx context.Context, c netpoll.Connection) (err error) {
 	defer func() {
 		if r := recover(); r != nil {
 			err = fmt.Errorf("onMsg panic:%v", r)
-			mlog.Error("%v\n%s", err, debug.Stack())
+			mlog.Errorf("%v\n%s", err, debug.Stack())
 		}
 		if err != nil {
-			mlog.Error("rpc server read cli msg err:%v\n", err)
+			mlog.Errorf("rpc server read cli msg err:%v\n", err)
 		}
 	}()
 	mc := ctx.Value(connectionContextName).(*SvrMuxConn)
 	reader := c.Reader()
-	if reader.Len() == 0 {
-		mlog.Debug("server onMsg cli EOF")
-		// 对端发送 FIN，正常关闭
-		c.Close()
-		return
-	}
+	// if reader.Len() == 0 {
+	// 	mlog.Debug("server onMsg cli EOF")
+	// 	// 对端发送 FIN，正常关闭
+	// 	c.Close()
+	// 	return
+	// }
 	for reader.Len() > msgLenSize {
 		lenBuf, _err := reader.Peek(msgLenSize)
 		if err = _err; err != nil {
@@ -258,7 +258,7 @@ func (s *Server) onMsg(ctx context.Context, c netpoll.Connection) (err error) {
 		// 反序列化
 		msg := &RpcRequestMessage{}
 		if err = rpcMsgUnmarshaler.Unmarshal(packetBuf, msg); err != nil {
-			mlog.Error("proto.Unmarshal RpcRequestMessage err:%v\n", err)
+			mlog.Errorf("proto.Unmarshal RpcRequestMessage err:%v\n", err)
 			return
 		}
 
@@ -273,7 +273,7 @@ func (s *Server) onMsg(ctx context.Context, c netpoll.Connection) (err error) {
 				return
 			case s.processors[idx].inChan <- task:
 			default:
-				mlog.Error("rpc processors[%d] inChan is full!!!", idx)
+				mlog.Errorf("rpc processors[%d] inChan is full!!!", idx)
 				s.processors[idx].inChan <- task
 			}
 		} else {
@@ -349,29 +349,29 @@ func (rc *RpcContext) SerializeResponse(marshaler *proto.MarshalOptions) {
 	// 获取整个写入空间(长度头+消息体)
 	buf, err := buffer.Malloc(msgLenSize + sz)
 	if err != nil {
-		mlog.Error("rpc server serializeResponse buffer.Malloc err:%v\n", err)
+		mlog.Errorf("rpc server serializeResponse buffer.Malloc err:%v\n", err)
 		return
 	}
 	data, err := rpcMsgMarshaler.MarshalAppend(buf[msgLenSize:msgLenSize], rsp) // len=0,cap=len(buf)-msgLenSize
 	if err != nil {
-		mlog.Error("rpc server serializeResponse proto.MarshalAppend err:%v\n", err)
+		mlog.Errorf("rpc server serializeResponse proto.MarshalAppend err:%v\n", err)
 		return
 	}
 	byteOrder.PutUint32(buf[:msgLenSize], uint32(len(data)))
 	if len(data) == len(buf[msgLenSize:]) {
-		mlog.Debug("rpc server serializeResponse async send response %v", rc.Conn.c.IsActive())
+		mlog.Debugf("rpc server serializeResponse async send response %v", rc.Conn.c.IsActive())
 		rc.Conn.mtx.Lock()
 		defer rc.Conn.mtx.Unlock()
 		if err = rc.Conn.c.Writer().Append(buffer); err != nil {
-			mlog.Error("rpc server serializeResponse Writer.Append err:%v\n", err)
+			mlog.Errorf("rpc server serializeResponse Writer.Append err:%v\n", err)
 			return
 		}
 		if err = rc.Conn.c.Writer().Flush(); err != nil {
-			mlog.Error("rpc server serializeResponse Writer.Flush err:%v\n", err)
+			mlog.Errorf("rpc server serializeResponse Writer.Flush err:%v\n", err)
 			return
 		}
 	} else {
-		mlog.Error("rpc server serializeResponse size wrong %d, %d\n", len(data), len(buf[msgLenSize:]))
+		mlog.Errorf("rpc server serializeResponse size wrong %d, %d\n", len(data), len(buf[msgLenSize:]))
 		return
 	}
 }

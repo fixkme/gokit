@@ -112,7 +112,7 @@ func (e *etcdImp) Start(wg *sync.WaitGroup) <-chan error {
 				wg.Done()
 			}
 			if r := recover(); r != nil {
-				mlog.Error("etcd run panic error: %v", r)
+				mlog.Errorf("etcd run panic error: %v", r)
 			}
 		}()
 		for {
@@ -127,7 +127,7 @@ func (e *etcdImp) Start(wg *sync.WaitGroup) <-chan error {
 					return
 				}
 				if err := watchRsp.Err(); err != nil {
-					mlog.Warn("etcd watch response error: %v", err)
+					mlog.Warnf("etcd watch response error: %v", err)
 					if err = e.processWatchError(err); err != nil {
 						errChan <- err
 						return
@@ -156,14 +156,14 @@ func (e *etcdImp) onStop() {
 	defer cancel()
 	e.regServs.Range(func(key, value any) bool {
 		if _, err := e.cli.Delete(ctx, key.(string)); err != nil {
-			mlog.Warn("etcd stop, Delete key error:%v", err)
+			mlog.Warnf("etcd stop, Delete key error:%v", err)
 		}
 		return true
 	})
 
 	// cli.Close()会触发e.rch close, 但是通过调用顺序规避了
 	if err := e.cli.Close(); err != nil {
-		mlog.Warn("etcd stop, Close error:%v", err)
+		mlog.Warnf("etcd stop, Close error:%v", err)
 	}
 	mlog.Info("etcd closed")
 }
@@ -187,12 +187,12 @@ func (e *etcdImp) putServiceKey(key string, rpcAddr string) error {
 	if err != nil {
 		return err
 	}
-	mlog.Info("etcd Grant lease ID: %X, TTL %d", resp.ID, e.leaseTTL)
+	mlog.Infof("etcd Grant lease ID: %X, TTL %d", resp.ID, e.leaseTTL)
 	_, err = e.cli.Put(e.ctx, key, rpcAddr, clientv3.WithLease(resp.ID))
 	if err != nil {
 		return err
 	}
-	mlog.Info("etcd PUT %s %s", key, rpcAddr)
+	mlog.Infof("etcd PUT %s %s", key, rpcAddr)
 	e.regServs.Store(key, rpcAddr)
 	ch, err := e.cli.KeepAlive(e.ctx, resp.ID)
 	if err != nil {
@@ -202,13 +202,13 @@ func (e *etcdImp) putServiceKey(key string, rpcAddr string) error {
 	go func() {
 		defer func() {
 			if r := recover(); r != nil {
-				mlog.Error("etcd keepalive recover error %v", r)
+				mlog.Errorf("etcd keepalive recover error %v", r)
 			}
 		}()
 		for {
 			_, ok := <-ch
 			if !ok {
-				mlog.Info("etcd key: %s KeepAlive channel closed", key)
+				mlog.Infof("etcd key: %s KeepAlive channel closed", key)
 				return
 			}
 		}
@@ -281,11 +281,11 @@ func (e *etcdImp) GetAllService(serviceName string) (rpcAddrs map[string]string,
 func (e *etcdImp) onWatchEvent(evt *clientv3.Event) {
 	key := string(evt.Kv.Key)
 	value := string(evt.Kv.Value)
-	mlog.Info("etcd onWatchEvent type %s, key %s, value %s", evt.Type, key, value)
+	mlog.Infof("etcd onWatchEvent type %s, key %s, value %s", evt.Type, key, value)
 
 	name, id, err := e.parseKey(key)
 	if err != nil {
-		mlog.Error("etcd onWatchEvent parseKey fail, key:%s, err:%v", key, err)
+		mlog.Errorf("etcd onWatchEvent parseKey fail, key:%s, err:%v", key, err)
 		return
 	}
 
@@ -294,19 +294,19 @@ func (e *etcdImp) onWatchEvent(evt *clientv3.Event) {
 
 	if int32(evt.Type) == eventType_Delete {
 		if e.delService(name, id) {
-			mlog.Info("etcd onWatchEvent delete (%s,%s)", name, id)
+			mlog.Infof("etcd onWatchEvent delete (%s,%s)", name, id)
 		}
 
 		// 删除的是本节点服务，重新注册此服务（被删除的原因，可能是keepalive超时了）
 		if rpcAddr, ok := e.regServs.Load(key); ok && !e.quit.Load() {
-			mlog.Info("etcd OnWatchEvent register again, key:%s, rpcAddr:%s", key, rpcAddr)
+			mlog.Infof("etcd OnWatchEvent register again, key:%s, rpcAddr:%s", key, rpcAddr)
 			if err := e.putServiceKey(key, rpcAddr.(string)); err != nil {
-				mlog.Error("etcd onWatchEvent putServiceKey err:%v", err)
+				mlog.Errorf("etcd onWatchEvent putServiceKey err:%v", err)
 			}
 		}
 	} else if int32(evt.Type) == eventType_Put {
 		if e.addService(name, id, value) {
-			mlog.Info("etcd onWatchEvent addService, %s -> %s", key, value)
+			mlog.Infof("etcd onWatchEvent addService, %s -> %s", key, value)
 		}
 	}
 }
@@ -368,11 +368,11 @@ func (e *etcdImp) loadExistedServices() (revision int64, err error) {
 	defer cancel()
 	rsp, err := e.cli.Get(ctx, e.prefix, clientv3.WithPrefix())
 	if err != nil {
-		mlog.Error("cacheExistedServices GetRequest err: %v", err)
+		mlog.Errorf("cacheExistedServices GetRequest err: %v", err)
 		return 0, err
 	}
 	revision = rsp.Header.Revision
-	mlog.Info("loadExistedServices GetResponse revision %v", revision)
+	mlog.Infof("loadExistedServices GetResponse revision %v", revision)
 
 	var key, value string
 	for _, v := range rsp.Kvs {
@@ -386,7 +386,7 @@ func (e *etcdImp) loadExistedServices() (revision int64, err error) {
 		}
 		if name, id, err := e.parseKey(key); err == nil {
 			if e.addService(name, id, value) {
-				mlog.Info("loadExistedServices addService, %s -> %s", key, value)
+				mlog.Infof("loadExistedServices addService, %s -> %s", key, value)
 			}
 		}
 	}

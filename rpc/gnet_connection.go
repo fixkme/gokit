@@ -123,7 +123,7 @@ func (c *ConnState) decodeRpcRsp(rpcRsp *RpcResponseMessage, out proto.Message) 
 	}
 	if out != nil {
 		if err := proto.Unmarshal(rpcRsp.Payload, out); err != nil {
-			mlog.Error("failed to unmarshal response: %v", err)
+			mlog.Errorf("failed to unmarshal response: %v", err)
 			return err
 		}
 	}
@@ -173,7 +173,6 @@ func (h *ClientHander) OnClose(c gnet.Conn, err error) (action gnet.Action) {
 // If you have to use this []byte in a new goroutine, you should either make a copy of it or call Conn.Read([]byte)
 // to read data into your own []byte, then pass the new []byte to the new goroutine.
 func (h *ClientHander) OnTraffic(c gnet.Conn) (action gnet.Action) {
-	mlog.Debug("OnTraffic")
 	for {
 		lenBuf := make([]byte, 4)
 		_, err := c.Read(lenBuf)

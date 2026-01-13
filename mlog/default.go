@@ -80,13 +80,13 @@ func (me *loggerImp) Start(ctx context.Context, wg *sync.WaitGroup) {
 			case <-timer.C:
 				size, err := getFileSize(me.file.Name())
 				if err != nil {
-					log.Printf("getFileSize error %v\n", err)
+					log.Println("mlog getFileSize error", err)
 					continue
 				}
 				if size > maxSize {
 					file, err := rotateLogFile(me.file.Name())
 					if err != nil {
-						log.Printf("rotateLogFile error %v\n", err)
+						log.Println("mlog rotateLogFile error", err)
 						continue
 					}
 					me.ll.SetOutput(file)
@@ -101,13 +101,99 @@ func (me *loggerImp) Start(ctx context.Context, wg *sync.WaitGroup) {
 	}()
 }
 
+func (me *loggerImp) Trace(args ...interface{}) {
+	if me.IsLevelEnabled(TraceLevel) {
+		me.buff <- (getLevelTag(TraceLevel) + fmt.Sprint(args...))
+	}
+}
+func (me *loggerImp) Tracef(format string, args ...interface{}) {
+	if me.IsLevelEnabled(TraceLevel) {
+		me.buff <- (getLevelTag(TraceLevel) + fmt.Sprintf(format, args...))
+	}
+}
+
+func (me *loggerImp) Debug(args ...interface{}) {
+	if me.IsLevelEnabled(DebugLevel) {
+		me.buff <- (getLevelTag(DebugLevel) + fmt.Sprint(args...))
+	}
+}
+
+func (me *loggerImp) Debugf(format string, args ...interface{}) {
+	if me.IsLevelEnabled(DebugLevel) {
+		me.buff <- (getLevelTag(DebugLevel) + fmt.Sprintf(format, args...))
+	}
+}
+
+func (me *loggerImp) Info(args ...interface{}) {
+	if me.IsLevelEnabled(InfoLevel) {
+		me.buff <- (getLevelTag(InfoLevel) + fmt.Sprint(args...))
+	}
+}
+
+func (me *loggerImp) Infof(format string, args ...interface{}) {
+	if me.IsLevelEnabled(InfoLevel) {
+		me.buff <- (getLevelTag(InfoLevel) + fmt.Sprintf(format, args...))
+	}
+}
+
+func (me *loggerImp) Notice(args ...interface{}) {
+	if me.IsLevelEnabled(NoticeLevel) {
+		me.buff <- (getLevelTag(NoticeLevel) + fmt.Sprint(args...))
+	}
+}
+
+func (me *loggerImp) Noticef(format string, args ...interface{}) {
+	if me.IsLevelEnabled(NoticeLevel) {
+		me.buff <- (getLevelTag(NoticeLevel) + fmt.Sprintf(format, args...))
+	}
+}
+
+func (me *loggerImp) Warn(args ...interface{}) {
+	if me.IsLevelEnabled(WarnLevel) {
+		me.buff <- (getLevelTag(WarnLevel) + fmt.Sprint(args...))
+	}
+}
+
+func (me *loggerImp) Warnf(format string, args ...interface{}) {
+	if me.IsLevelEnabled(WarnLevel) {
+		me.buff <- (getLevelTag(WarnLevel) + fmt.Sprintf(format, args...))
+	}
+}
+
+func (me *loggerImp) Error(args ...interface{}) {
+	if me.IsLevelEnabled(ErrorLevel) {
+		me.buff <- (getLevelTag(ErrorLevel) + fmt.Sprint(args...))
+	}
+}
+
+func (me *loggerImp) Errorf(format string, args ...interface{}) {
+	if me.IsLevelEnabled(ErrorLevel) {
+		me.buff <- (getLevelTag(ErrorLevel) + fmt.Sprintf(format, args...))
+	}
+}
+
+func (me *loggerImp) Fatal(args ...interface{}) {
+	if me.IsLevelEnabled(FatalLevel) {
+		me.buff <- (getLevelTag(FatalLevel) + fmt.Sprint(args...))
+		time.Sleep(time.Second)
+		os.Exit(1)
+	}
+}
+
+func (me *loggerImp) Fatalf(format string, args ...interface{}) {
+	if me.IsLevelEnabled(FatalLevel) {
+		me.buff <- (getLevelTag(FatalLevel) + fmt.Sprintf(format, args...))
+		time.Sleep(time.Second)
+		os.Exit(1)
+	}
+}
+
 func (me *loggerImp) Logf(level Level, format string, args ...interface{}) {
 	if me.IsLevelEnabled(level) {
-		if len(args) == 0 {
-			me.buff <- (getLevelTag(level) + format)
+		if len(format) == 0 {
+			me.buff <- getLevelTag(level) + fmt.Sprint(args...)
 		} else {
-			format = getLevelTag(level) + format
-			me.buff <- fmt.Sprintf(format, args...)
+			me.buff <- getLevelTag(level) + fmt.Sprintf(format, args...)
 		}
 	}
 }
@@ -118,14 +204,14 @@ func (me *loggerImp) IsLevelEnabled(level Level) bool {
 
 func getLevelTag(level Level) string {
 	switch level {
-	case PanicLevel:
-		return "[panic] "
 	case FatalLevel:
 		return "[fatal] "
 	case ErrorLevel:
 		return "[error] "
 	case WarnLevel:
 		return "[warn] "
+	case NoticeLevel:
+		return "[notice] "
 	case InfoLevel:
 		return "[info] "
 	case DebugLevel:

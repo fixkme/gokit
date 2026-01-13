@@ -86,7 +86,7 @@ func (m *DeltaMonitor[ID]) PutEntity(id ID, data any, must bool) bool {
 		return true
 	default:
 		// channel is full
-		mlog.Info("DeltaMonitor PutEntity channel is full, entity id %v, data: %v", id, data)
+		mlog.Infof("DeltaMonitor PutEntity channel is full, entity id %v, data: %v", id, data)
 		if must {
 			m.deltas <- item
 			return true
@@ -101,7 +101,7 @@ func (m *DeltaMonitor[ID]) OnCollect(c IDeltaCollector[ID]) {
 
 func (m *DeltaMonitor[ID]) SaveChangedDatas() {
 	for _, v := range m.changes {
-		mlog.Debug("collector size %s:%v", m.collName, v.CollectSize())
+		mlog.Debugf("collector size %s:%v", m.collName, v.CollectSize())
 		m.saveEntity(v, false)
 	}
 }
@@ -136,7 +136,7 @@ const timeout = 5 * time.Second
 func (m *DeltaMonitor[ID]) saveEntityToDb(id ID, data any) error {
 	defer func() {
 		if err := recover(); err != nil {
-			mlog.Error("save data to mongo panic, entity id %v, data:%v, err:%v\n%v", id, data, err, string(debug.Stack()))
+			mlog.Errorf("save data to mongo panic, entity id %v, data:%v, err:%v\n%v", id, data, err, string(debug.Stack()))
 		}
 	}()
 	if data == nil {
@@ -147,27 +147,27 @@ func (m *DeltaMonitor[ID]) saveEntityToDb(id ID, data any) error {
 	opts := options.Update().SetUpsert(true)
 	filter := bson.M{"_id": id}
 	if _, err := m.coll.UpdateOne(ctx, filter, data, opts); err != nil {
-		mlog.Error("save data to mongo failed, entity id %v, data:%v, err:%v", id, data, err)
+		mlog.Errorf("save data to mongo failed, entity id %v, data:%v, err:%v", id, data, err)
 		return err
 	}
-	mlog.Debug("save data to mongo success, entity id %v, data:%v", id, data)
+	mlog.Debugf("save data to mongo success, entity id %v, data:%v", id, data)
 	return nil
 }
 
 func (m *DeltaMonitor[ID]) deleteEntityInDb(id ID) error {
 	defer func() {
 		if err := recover(); err != nil {
-			mlog.Error("delete data to mongo panic, entity id %v, err:%v\n%v", id, err, string(debug.Stack()))
+			mlog.Errorf("delete data to mongo panic, entity id %v, err:%v\n%v", id, err, string(debug.Stack()))
 		}
 	}()
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	filter := bson.M{"_id": id}
 	if _, err := m.coll.DeleteOne(ctx, filter); err != nil {
-		mlog.Error("delete data to mongo failed, entity id %v, err:%v", id, err)
+		mlog.Errorf("delete data to mongo failed, entity id %v, err:%v", id, err)
 		return err
 	}
-	mlog.Debug("delete data to mongo success, entity id %v", id)
+	mlog.Debugf("delete data to mongo success, entity id %v", id)
 	return nil
 }
 
@@ -191,7 +191,7 @@ func (m *DeltaMonitor[ID]) mustProcessEntity(id ID, data any) {
 			return
 		}
 		if mongo.IsTimeout(err) || mongo.IsNetworkError(err) || err == mongo.ErrClientDisconnected {
-			mlog.Info("DeltaMonitor (%s, %s) retry save data to mongo after %d seconds", m.dBName, m.collName, retryInterval)
+			mlog.Infof("DeltaMonitor (%s, %s) retry save data to mongo after %d seconds", m.dBName, m.collName, retryInterval)
 			time.Sleep(retryInterval * time.Second)
 		} else {
 			return

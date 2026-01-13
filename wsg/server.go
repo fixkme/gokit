@@ -166,7 +166,7 @@ func (s *Server) OnTraffic(c gnet.Conn) (r gnet.Action) {
 	// 处理握手
 	if !conn.isUpgrade {
 		if err := s.handshake(conn); err != nil {
-			mlog.Error("ws handshake failed, %v", err)
+			mlog.Errorf("ws handshake failed, %v", err)
 			s.tryPromptlyRemoveHandshakingQnode(conn)
 			return gnet.Close
 		}
@@ -174,7 +174,7 @@ func (s *Server) OnTraffic(c gnet.Conn) (r gnet.Action) {
 	}
 	// 处理websocket帧
 	if err := s.readFrame(conn); err != nil {
-		mlog.Error("read ws frame err: %v", err)
+		mlog.Errorf("read ws frame err: %v", err)
 		return gnet.Close
 	}
 	return
@@ -325,19 +325,19 @@ func (s *Server) runTicker(quit <-chan struct{}) {
 		case <-quit:
 			return
 		case c, ok := <-s.handshakingWait:
-			mlog.Debug("handshakingWait %v, %v", c.conn.IsUpgraded(), c.conn.RemoteAddr())
+			mlog.Debugf("handshakingWait %v, %v", c.conn.IsUpgraded(), c.conn.RemoteAddr())
 			if ok && c.conn.IsUpgraded() == false {
 				if node := s.handshakingQueue.Push(c); node != nil {
 					c.conn.qnode.Store(node)
 				} else {
-					mlog.Warn("handshakingQueue full, %v", c.conn.RemoteAddr())
+					mlog.Warnf("handshakingQueue full, %v", c.conn.RemoteAddr())
 					c.conn.Close()
 				}
 			}
 		case conn := <-s.handshakingOver:
 			if conn != nil && conn.qnode.Load() != nil {
 				if node := conn.qnode.Swap(nil); node != nil {
-					mlog.Debug("handshakingOver %v, %v", conn.IsUpgraded(), conn.RemoteAddr())
+					mlog.Debugf("handshakingOver %v, %v", conn.IsUpgraded(), conn.RemoteAddr())
 					s.handshakingQueue.Remove(node)
 				}
 			}
@@ -364,13 +364,13 @@ func (s *Server) updateHandshakingQueue(nowMs int64) (nextDur time.Duration) {
 			return false
 		}
 		if c.conn.IsUpgraded() == false {
-			mlog.Info("handshake timeout %v", c.conn.RemoteAddr())
+			mlog.Infof("handshake timeout %v", c.conn.RemoteAddr())
 			c.conn.Close()
 		}
 		c.conn.qnode.Store(nil)
 		return true
 	})
-	//mlog.Debug("updateHandshakingQueue size:%d,  %v", s.handshakingQueue.Len(), time.Now())
+	//mlog.Debugf("updateHandshakingQueue size:%d,  %v", s.handshakingQueue.Len(), time.Now())
 	return
 }
 
