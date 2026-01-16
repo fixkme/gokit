@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"math/rand"
 	"reflect"
-	"runtime/debug"
 	sync "sync"
+	"sync/atomic"
 
 	"github.com/cloudwego/netpoll"
 	"github.com/fixkme/gokit/errs"
@@ -21,6 +21,7 @@ type Server struct {
 	listener netpoll.Listener
 	evloop   netpoll.EventLoop
 	conns    map[netpoll.Connection]*SvrMuxConn
+	closed   atomic.Bool // server closed
 
 	services   map[string]*serviceInfo // service name -> service info
 	processors []*rpcProcessor
@@ -113,13 +114,18 @@ func (s *Server) Run() error {
 		go s.processors[i].run(s.quit)
 	}
 	if err := s.evloop.Serve(s.listener); err != nil {
+		mlog.Errorf("rpc server Run err:%s", err)
 		close(s.quit)
 		return err
 	}
+	mlog.Info("rpc server Run exit")
 	return nil
 }
 
 func (s *Server) Stop(ctx context.Context) error {
+	if old := s.closed.Swap(true); old {
+		return nil
+	}
 	mlog.Debug("rpc server stop")
 	s.listener.Close()
 	for c := range s.conns {
@@ -217,69 +223,51 @@ func (s *Server) prepare(conn netpoll.Connection) context.Context {
 
 func (s *Server) onMsg(ctx context.Context, c netpoll.Connection) (err error) {
 	defer func() {
-		if r := recover(); r != nil {
-			err = fmt.Errorf("onMsg panic:%v", r)
-			mlog.Errorf("%v\n%s", err, debug.Stack())
-		}
 		if err != nil {
 			mlog.Errorf("rpc server read cli msg err:%v\n", err)
+			if errors.Is(err, netpoll.ErrReadTimeout) {
+				c.Close()
+			}
 		}
 	}()
 	mc := ctx.Value(connectionContextName).(*SvrMuxConn)
 	reader := c.Reader()
-	// if reader.Len() == 0 {
-	// 	mlog.Debug("server onMsg cli EOF")
-	// 	// 对端发送 FIN，正常关闭
-	// 	c.Close()
-	// 	return
-	// }
-	for reader.Len() > msgLenSize {
-		lenBuf, _err := reader.Peek(msgLenSize)
-		if err = _err; err != nil {
-			if errors.Is(err, netpoll.ErrConnClosed) {
-				mlog.Debug("server onMsg cli closed")
-				err = nil
-				return
-			}
-			return
-		}
-		dataLen := int(byteOrder.Uint32(lenBuf))
-		totalLen := msgLenSize + dataLen
-		if reader.Len() < totalLen {
-			return
-		}
-		if err = reader.Skip(msgLenSize); err != nil {
-			return
-		}
-		packetBuf, _err := reader.Next(dataLen)
-		if err = _err; err != nil {
-			return
-		}
-		// 反序列化
-		msg := &RpcRequestMessage{}
-		if err = rpcMsgUnmarshaler.Unmarshal(packetBuf, msg); err != nil {
-			mlog.Errorf("proto.Unmarshal RpcRequestMessage err:%v\n", err)
-			return
-		}
 
-		if pn := len(s.processors); pn > 0 {
-			// 分发消息
-			hashCode := s.opt.DispatcherFunc(c, msg)
-			idx := hashCode % pn
-			task := &rpcTask{conn: mc, msg: msg}
-			select {
-			case <-ctx.Done():
-				err = ctx.Err()
-				return
-			case s.processors[idx].inChan <- task:
-			default:
-				mlog.Errorf("rpc processors[%d] inChan is full!!!", idx)
-				s.processors[idx].inChan <- task
-			}
-		} else {
-			// 直接处理
-			s.handler(mc, msg)
+	lenBuf, _err := reader.Next(msgLenSize)
+	if err = _err; err != nil {
+		mlog.Debugf("server onMsg read msgLenBuf err:%v", err)
+		return
+	}
+	dataLen := int(byteOrder.Uint32(lenBuf))
+	packetBuf, _err := reader.Next(dataLen)
+	if err = _err; err != nil {
+		mlog.Debugf("server onMsg read msg data err:%v", err)
+		return
+	}
+	// 反序列化
+	msg := &RpcRequestMessage{}
+	if err = rpcMsgUnmarshaler.Unmarshal(packetBuf, msg); err != nil {
+		mlog.Errorf("proto.Unmarshal RpcRequestMessage err:%v\n", err)
+		return
+	}
+
+	if pn := len(s.processors); pn > 0 {
+		// 分发消息
+		hashCode := s.opt.DispatcherFunc(c, msg)
+		idx := hashCode % pn
+		task := &rpcTask{conn: mc, msg: msg}
+		select {
+		case <-ctx.Done():
+			err = ctx.Err()
+			return
+		case s.processors[idx].inChan <- task:
+		default:
+			mlog.Errorf("rpc processors[%d] inChan is full!!!", idx)
+			s.processors[idx].inChan <- task
 		}
+	} else {
+		// 直接处理
+		s.handler(mc, msg)
 	}
 	return
 }

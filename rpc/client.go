@@ -210,6 +210,7 @@ func (c *ClientConn) asyncWrite(buffer *netpoll.LinkBuffer) error {
 
 	if !c.conn.IsActive() {
 		mlog.Warn("rpc client conn is not active when asyncWrite, now reconnect")
+		c.conn.Close()
 		if err := c.reconnect(); err != nil {
 			return err
 		}
@@ -261,82 +262,64 @@ func (c *ClientConn) decodeRpcRsp(rpcRsp *RpcResponseMessage, out proto.Message)
 
 func (cli *ClientConn) onRecvMsg(_ context.Context, conn netpoll.Connection) (err error) {
 	reader := conn.Reader()
-	mlog.Debugf("client read buffer before size:%d", reader.Len())
-	// defer func() {
-	// 	mlog.Debug("%d client read buffer surplus size:%d", util.GoroutineID(), reader.Len())
-	// }()
-	for {
-		if reader.Len() <= msgLenSize {
-			// Peek方法可能会阻塞
-			// 如果reader.Len() < msgLenSize, Peek方法会阻塞
-			// 所以需要提前判断 reader.Len() <= msgLenSize
-			return nil
-		}
-		lenBuf, _err := reader.Peek(msgLenSize)
-		if _err != nil {
-			return _err
-		}
-		dataLen := int(byteOrder.Uint32(lenBuf))
-		totalLen := msgLenSize + dataLen
-		if reader.Len() < totalLen {
-			return
-		}
-		if err = reader.Skip(msgLenSize); err != nil {
-			return
-		}
-		packetBuf, _err := reader.Next(dataLen)
-		if _err != nil {
-			return _err
-		}
-		// 反序列化
-		msg := &RpcResponseMessage{}
-		if err = rpcMsgUnmarshaler.Unmarshal(packetBuf, msg); err != nil {
-			mlog.Errorf("proto.Unmarshal RpcRequestMessage err:%v\n", err)
-			return err
-		}
-		mlog.Debugf("recv RpcResponseMessage msgId:%v", msg.Seq)
-
-		cli.mtx.Lock()
-		callInfo, ok := cli.waitRsps[msg.Seq]
-		cli.mtx.Unlock()
-		if ok {
-			if callInfo.syncRet != nil {
-				callInfo.syncRet <- &callResult{rpcRsp: msg}
-			} else if callInfo.asyncRet != nil {
-				if exAt := callInfo.expireAt; exAt > 0 {
-					cli.tmoutMtx.Lock()
-					val, ok := cli.timeouts.Get(exAt)
-					if ok {
-						set := val.(map[uint32]struct{})
-						delete(set, msg.Seq)
-					}
-					cli.tmoutMtx.Unlock()
-				}
-
-				cli.mtx.Lock()
-				delete(cli.waitRsps, msg.Seq)
-				cli.mtx.Unlock()
-
-				rspMd, rspData, callErr := cli.decodeRpcRsp(msg, callInfo.outRsp)
-				asyncRet := &AsyncCallResult{Err: callErr, RspMd: rspMd, PassThrough: callInfo.passThrough}
-				if callInfo.outRsp != nil {
-					asyncRet.Rsp = callInfo.outRsp
-				} else {
-					asyncRet.Rsp = rspData
-				}
-				select {
-				case callInfo.asyncRet <- asyncRet:
-					mlog.Debugf("async call push result msgId:%v", msg.Seq)
-				default:
-					mlog.Error("async call result chan is full!!!")
-					callInfo.asyncRet <- asyncRet
-				}
-			}
-		} else {
-			//rpc异步请求不需要response的情况
-			//mlog.Debug("cli.waitRsps not find msgId:%v", msg.Seq)
-		}
+	lenBuf, _err := reader.Next(msgLenSize)
+	if _err != nil {
+		return _err
 	}
+	dataLen := int(byteOrder.Uint32(lenBuf))
+	packetBuf, _err := reader.Next(dataLen)
+	if _err != nil {
+		return _err
+	}
+	// 反序列化
+	msg := &RpcResponseMessage{}
+	if err = rpcMsgUnmarshaler.Unmarshal(packetBuf, msg); err != nil {
+		mlog.Errorf("proto.Unmarshal RpcResponseMessage err:%v\n", err)
+		return err
+	}
+	mlog.Debugf("recv RpcResponseMessage msgId:%v", msg.Seq)
+
+	cli.mtx.Lock()
+	callInfo, ok := cli.waitRsps[msg.Seq]
+	cli.mtx.Unlock()
+	if ok {
+		if callInfo.syncRet != nil {
+			callInfo.syncRet <- &callResult{rpcRsp: msg}
+		} else if callInfo.asyncRet != nil {
+			if exAt := callInfo.expireAt; exAt > 0 {
+				cli.tmoutMtx.Lock()
+				val, ok := cli.timeouts.Get(exAt)
+				if ok {
+					set := val.(map[uint32]struct{})
+					delete(set, msg.Seq)
+				}
+				cli.tmoutMtx.Unlock()
+			}
+
+			cli.mtx.Lock()
+			delete(cli.waitRsps, msg.Seq)
+			cli.mtx.Unlock()
+
+			rspMd, rspData, callErr := cli.decodeRpcRsp(msg, callInfo.outRsp)
+			asyncRet := &AsyncCallResult{Err: callErr, RspMd: rspMd, PassThrough: callInfo.passThrough}
+			if callInfo.outRsp != nil {
+				asyncRet.Rsp = callInfo.outRsp
+			} else {
+				asyncRet.Rsp = rspData
+			}
+			select {
+			case callInfo.asyncRet <- asyncRet:
+				mlog.Debugf("async call push result msgId:%v", msg.Seq)
+			default:
+				mlog.Error("async call result chan is full!!!")
+				callInfo.asyncRet <- asyncRet
+			}
+		}
+	} else {
+		//rpc异步请求不需要response的情况
+		//mlog.Debugf("cli.waitRsps not find msgId:%v", msg.Seq)
+	}
+	return
 }
 
 func (c *ClientConn) processTimeout() {
@@ -425,6 +408,7 @@ func (c *ClientConn) reconnect() error {
 	} else {
 		if err := c.conn.Close(); err != nil {
 			mlog.Errorf("reconnect, rpc client Close error %v", err)
+			return err
 		}
 		c.initConn(conn)
 	}
