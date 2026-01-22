@@ -121,7 +121,7 @@ func (c *ClientConn) Invoke(ctx context.Context, service, method string, req any
 		err = _err
 		return
 	}
-	if err = c.asyncWrite(buffer); err != nil {
+	if err = c.syncWrite(buffer); err != nil {
 		return
 	}
 
@@ -200,7 +200,7 @@ func (c *ClientConn) Invoke(ctx context.Context, service, method string, req any
 	}
 }
 
-func (c *ClientConn) asyncWrite(buffer *netpoll.LinkBuffer) error {
+func (c *ClientConn) syncWrite(buffer *netpoll.LinkBuffer) error {
 	if c.closed.Load() {
 		return errors.New("client closed")
 	}
