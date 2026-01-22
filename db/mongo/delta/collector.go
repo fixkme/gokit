@@ -6,20 +6,20 @@ import (
 
 	"github.com/armon/go-radix"
 	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/bson/primitive"
 )
 
 type idType interface {
-	int64 | string
+	int64 | string | primitive.ObjectID
 }
 
 type IDeltaCollector[ID idType] interface {
-	// 收集变化的数据。由于兼容生成的.pc代码，加入ntf参数
-	Collect(key string, val any, ntf bool)
+	ICollector
 	// 重置收集器
 	Reset()
 	CollectSize() int
-	// 绑定监视器
-	BindMonitor(IDeltaMonitor[ID])
+	// 绑定监视器和model
+	BindMonitor(IDeltaMonitor[ID], IModel)
 	// 获取变化数据
 	CatchDeltaData() bson.D
 	// 获取所属对象
@@ -128,8 +128,15 @@ outer:
 	return
 }
 
-func (c *DeltaCollector[ID]) BindMonitor(IDeltaMonitor[ID]) {
-	panic("not implement BindMonitor")
+func (c *DeltaCollector[ID]) BindMonitor(m IDeltaMonitor[ID], model IModel) {
+	cb := func(_ string) {
+		if c.IsDataChange() {
+			return
+		}
+		c.SetDataChange(true)
+		m.OnCollect(c)
+	}
+	model.SetCollector("", c, cb)
 }
 
 func (c *DeltaCollector[ID]) GetEntityId() ID {
