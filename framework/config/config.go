@@ -18,12 +18,14 @@ type AppConfig struct {
 }
 
 type RpcConfig struct {
-	RpcGroup      string `json:"rpc_group" mapstructure:"rpc_group"`             //rpc群组名称，群组之间隔离
-	RpcAddr       string `json:"rpc_addr" mapstructure:"rpc_addr"`               //本节点服务注册到etcd的地址，让其他节点作为客户端连接
-	RpcListenAddr string `json:"rpc_listen_addr" mapstructure:"rpc_listen_addr"` //本节点服务监听的端口
-	RpcPollerNum  int    `json:"rpc_poller_num" mapstructure:"rpc_poller_num"`   //rpc服务poller协程数量
-	EtcdEndpoints string `json:"etcd_endpoints" mapstructure:"etcd_endpoints"`   //etcd地址
-	EtcdLeaseTTL  int64  `json:"etcd_lease" mapstructure:"etcd_lease_ttl"`       //注册服务到etcd的租约时间
+	EtcdEndpoints   string `json:"etcd_endpoints" mapstructure:"etcd_endpoints"`       //etcd地址
+	EtcdLeaseTTL    int64  `json:"etcd_lease" mapstructure:"etcd_lease_ttl"`           //注册服务到etcd的租约时间
+	RpcGroup        string `json:"rpc_group" mapstructure:"rpc_group"`                 //rpc群组名称，群组之间隔离
+	RpcAddr         string `json:"rpc_addr" mapstructure:"rpc_addr"`                   //本节点服务注册到etcd的地址，让其他节点作为客户端连接
+	RpcListenAddr   string `json:"rpc_listen_addr" mapstructure:"rpc_listen_addr"`     //本节点服务监听的端口
+	RpcPollerNum    int    `json:"rpc_poller_num" mapstructure:"rpc_poller_num"`       //rpc服务poller协程数量
+	RpcReadTimeout  int    `json:"rpc_read_timeout" mapstructure:"rpc_read_timeout"`   //rpc服务读超时 毫秒
+	RpcWriteTimeout int    `json:"rpc_write_timeout" mapstructure:"rpc_write_timeout"` //rpc服务写超时 毫秒
 }
 
 type LogConfig struct {
@@ -42,6 +44,10 @@ type RedisConfig struct {
 }
 
 func LoadConfig(configFile string, loadConfigFromEnv func(*AppConfig) error) error {
+	Config = new(AppConfig)
+	if len(configFile) == 0 {
+		return loadConfigFromEnv(Config)
+	}
 	if err := loadConfigFromFile(configFile); err != nil {
 		return err
 	}
@@ -57,4 +63,15 @@ func loadConfigFromFile(configFile string) error {
 		return err
 	}
 	return json.Unmarshal(data, &Config)
+}
+
+func (conf *AppConfig) JsonFormat() string {
+	if conf == nil {
+		return "{}"
+	}
+	data, err := json.MarshalIndent(conf, "", "  ")
+	if err != nil {
+		return ""
+	}
+	return string(data)
 }

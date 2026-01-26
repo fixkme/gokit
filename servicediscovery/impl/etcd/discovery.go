@@ -222,12 +222,12 @@ func (e *etcdImp) putServiceKey(key string, rpcAddr string) error {
 func (e *etcdImp) UnregisterService(serviceName string) (err error) {
 	e.regServs.Range(func(k, v any) bool {
 		key := k.(string)
-		ss := strings.Split(key, ":")
+		ss := strings.Split(key[len(e.prefix):], ":")
 		if slices.Index(ss, serviceName) >= 0 {
-			e.regServs.Delete(key)
 			if _, err = e.cli.Delete(e.ctx, key); err != nil {
-				e.regServs.Store(k, v)
+				return false
 			}
+			e.regServs.Delete(key)
 		}
 		return true
 	})
