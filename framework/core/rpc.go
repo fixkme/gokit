@@ -1,0 +1,148 @@
+package core
+
+import (
+	"context"
+	"runtime"
+	"strings"
+	"time"
+
+	"github.com/cloudwego/netpoll"
+	"github.com/fixkme/gokit/framework/config"
+	"github.com/fixkme/gokit/mlog"
+	"github.com/fixkme/gokit/rpc"
+	"github.com/fixkme/gokit/servicediscovery/impl/etcd"
+	clientv3 "go.etcd.io/etcd/client/v3"
+	"google.golang.org/protobuf/proto"
+)
+
+var (
+	Rpc *RpcModule
+)
+
+type RpcModule struct {
+	rpcConfig *config.RpcConfig
+	serverOpt *rpc.ServerOpt
+	etcdOpt   *etcd.EtcdOpt
+	rpcer     *rpc.RpcImp
+	name      string
+}
+
+func InitRpcModule(name string, handlerFunc rpc.RpcHandler, conf *config.RpcConfig) error {
+	if handlerFunc == nil {
+		handlerFunc = RpcHandlerFunc
+	}
+	rpcAddr := conf.RpcAddr
+	listenAddr := conf.RpcListenAddr
+	if listenAddr == "" {
+		idx := strings.LastIndex(rpcAddr, ":")
+		if idx != -1 {
+			listenAddr = rpcAddr[idx:]
+		}
+	}
+	pollerOpts := []netpoll.Option{
+		netpoll.WithReadTimeout(10 * time.Second),
+		netpoll.WithWriteTimeout(10 * time.Second),
+	}
+	pollerNum := conf.RpcPollerNum
+	if pollerNum == 0 {
+		pollerNum = runtime.NumCPU()
+	}
+	serverOpt := &rpc.ServerOpt{
+		ListenAddr:  listenAddr,
+		PollerNum:   pollerNum,
+		PollOpts:    pollerOpts,
+		HandlerFunc: handlerFunc,
+	}
+	etcdAddrs := conf.EtcdEndpoints
+	etcdOpt := &etcd.EtcdOpt{
+		LeaseTTL: conf.EtcdLeaseTTL,
+		Config: clientv3.Config{
+			Endpoints:            strings.Split(etcdAddrs, ","),
+			DialTimeout:          5 * time.Second,
+			DialKeepAliveTime:    5 * time.Second,
+			DialKeepAliveTimeout: 3 * time.Second,
+			AutoSyncInterval:     15 * time.Second,
+		},
+	}
+	Rpc = &RpcModule{
+		rpcConfig: conf,
+		serverOpt: serverOpt,
+		etcdOpt:   etcdOpt,
+		name:      name,
+	}
+	return nil
+}
+
+func (m *RpcModule) Call(serviceName string, cb rpc.RPCReq) (proto.Message, error) {
+	return m.rpcer.Call(serviceName, cb)
+}
+
+func (m *RpcModule) RegisterService(serviceName string, cb func(rpcSrv rpc.ServiceRegistrar, nodeName string) error) error {
+	return m.rpcer.RegisterService(serviceName, false, cb)
+}
+
+func (m *RpcModule) RegisterServiceOnlyOne(serviceName string, cb func(rpcSrv rpc.ServiceRegistrar, nodeName string) error) error {
+	return m.rpcer.RegisterService(serviceName, true, cb)
+}
+
+func (m *RpcModule) UnregisterService(serviceName string) error {
+	return m.rpcer.UnregisterService(serviceName)
+}
+
+func (m *RpcModule) OnInit() error {
+	rpcTmp, err := rpc.NewRpc(context.Background(), m.rpcConfig.RpcAddr, m.rpcConfig.RpcGroup, m.etcdOpt, m.serverOpt)
+	if err != nil {
+		return err
+	}
+	m.rpcer = rpcTmp
+	return nil
+}
+
+func (m *RpcModule) Run() {
+	if err := m.rpcer.Run(); err != nil {
+		panic(err)
+	}
+}
+
+func (m *RpcModule) Destroy() {
+	err := m.rpcer.Stop()
+	if err != nil {
+		mlog.Errorf("%v module stop error: %v", m.name, err)
+	}
+}
+
+func (m *RpcModule) Name() string {
+	return m.name
+}
+
+var (
+	// 全局默认，用户层pb消息解码
+	MsgUnmarshaler = proto.UnmarshalOptions{
+		Merge:          false,
+		AllowPartial:   true,
+		DiscardUnknown: false,
+		RecursionLimit: 100,
+		NoLazyDecoding: true,
+	}
+	// 全局默认，用户层pb消息编码
+	MsgMarshaler = proto.MarshalOptions{
+		AllowPartial:  true,
+		Deterministic: false,
+	}
+)
+
+// 默认RpcHandler
+func RpcHandlerFunc(rc *rpc.RpcContext) {
+	argMsg, logicHandler := rc.Method(rc.SrvImpl)
+	if err := MsgUnmarshaler.Unmarshal(rc.Req.Payload, argMsg); err == nil {
+		rc.Reply, rc.ReplyErr = logicHandler(context.Background(), argMsg)
+	} else {
+		rc.ReplyErr = err
+	}
+	if rc.ReplyErr == nil {
+		mlog.Debugf("rpc handler msg succeed, method:%s, req_data:%v, rsp_data:%v", rc.Req.MethodName, argMsg, rc.Reply)
+	} else {
+		mlog.Errorf("rpc handler msg failed, method:%s, req_data:%v, err:%v", rc.Req.MethodName, argMsg, rc.ReplyErr)
+	}
+	rc.SerializeResponse(&MsgMarshaler)
+}

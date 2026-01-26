@@ -93,20 +93,13 @@ func (imp *RpcImp) Stop() error {
 	return nil
 }
 
-// 向etcd注册服务
-func (imp *RpcImp) RegisterService(serviceName string, cb func(rpcSrv ServiceRegistrar, nodeName string) error) error {
-	nodeName, err := imp.etcd.RegisterService(serviceName, imp.rpcAddr)
-	if nil != err {
-		return err
-	}
-	return cb(imp.server, nodeName)
-}
-
-// 向etcd注册唯一服务， 已注册相同的服务则返回错误
-func (imp *RpcImp) RegisterServiceOnlyOne(serviceName string, cb func(rpcSrv ServiceRegistrar, nodeName string) error) error {
-	allService, _ := imp.etcd.GetAllService(serviceName)
-	if len(allService) > 0 {
-		return errors.New("already exists service")
+// 向etcd注册服务, unique=true:注册已存在的服务则返回错误
+func (imp *RpcImp) RegisterService(serviceName string, unique bool, cb func(rpcSrv ServiceRegistrar, nodeName string) error) error {
+	if unique {
+		allService, _ := imp.etcd.GetAllService(serviceName)
+		if len(allService) > 0 {
+			return errors.New("already exists service")
+		}
 	}
 	nodeName, err := imp.etcd.RegisterService(serviceName, imp.rpcAddr)
 	if nil != err {

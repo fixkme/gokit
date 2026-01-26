@@ -1,4 +1,4 @@
-package util
+package app
 
 import (
 	"log"
@@ -26,7 +26,7 @@ var defaultApp = new(App)
 
 type Module interface {
 	OnInit() error // 初始化
-	OnDestroy()    // 销毁
+	Destroy()      // 销毁
 	Run()          // 启动
 	Name() string  // 名字
 }
@@ -46,6 +46,7 @@ func DefaultApp() *App {
 type App struct {
 	mods  []*mod
 	state int32
+	sig   chan os.Signal
 	wg    *sync.WaitGroup
 }
 
@@ -125,15 +126,15 @@ func destroy(m *mod) {
 		}
 	}()
 
-	m.mi.OnDestroy()
+	m.mi.Destroy()
 }
 
 func (app *App) Run(mods ...Module) {
 	app.start(mods...)
-	c := make(chan os.Signal, 1)
+	app.sig = make(chan os.Signal, 1)
 	for {
-		signal.Notify(c, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
-		sig := <-c
+		signal.Notify(app.sig, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
+		sig := <-app.sig
 		mlog.Infof("server closing down (signal: %v)", sig)
 		if sig != syscall.SIGHUP {
 			break
@@ -141,4 +142,8 @@ func (app *App) Run(mods ...Module) {
 	}
 
 	app.stop()
+}
+
+func (app *App) Stop() {
+	app.sig <- syscall.SIGTERM
 }

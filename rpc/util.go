@@ -65,9 +65,12 @@ func GetInnerIPs() ([]string, error) {
 }
 
 // 同步调用
-func SyncCall(ctx context.Context, cc *ClientConn, req proto.Message, outRsp proto.Message, timeout time.Duration) (err error) {
+func SyncCall(ctx context.Context, cc *ClientConn, req proto.Message, outRsp proto.Message, timeout time.Duration, md ...*Meta) (err error) {
 	opt := &CallOption{
 		Timeout: timeout,
+	}
+	if len(md) > 0 {
+		opt.ReqMd = md[0]
 	}
 	fullName := string(req.ProtoReflect().Descriptor().FullName())
 	v2 := strings.SplitN(fullName, ".", 2)
@@ -77,9 +80,12 @@ func SyncCall(ctx context.Context, cc *ClientConn, req proto.Message, outRsp pro
 }
 
 // 异步调用，不需要回应
-func AsyncCallWithoutResp(ctx context.Context, cc *ClientConn, req proto.Message) (err error) {
+func AsyncCallWithoutResp(ctx context.Context, cc *ClientConn, req proto.Message, md ...*Meta) (err error) {
 	opt := &CallOption{
 		Async: true,
+	}
+	if len(md) > 0 {
+		opt.ReqMd = md[0]
 	}
 	fullName := string(req.ProtoReflect().Descriptor().FullName())
 	v2 := strings.SplitN(fullName, ".", 2)
@@ -90,12 +96,15 @@ func AsyncCallWithoutResp(ctx context.Context, cc *ClientConn, req proto.Message
 
 // 异步调用，带有回应
 func AsyncCallWithResp(ctx context.Context, cc *ClientConn, req proto.Message,
-	outRsp proto.Message, outRet chan *AsyncCallResult, passData any, timeout time.Duration) (err error) {
+	outRsp proto.Message, outRet chan *AsyncCallResult, passData any, timeout time.Duration, md ...*Meta) (err error) {
 	opt := &CallOption{
 		Async:        true,
 		Timeout:      timeout,
 		AsyncRetChan: outRet,
 		PassThrough:  passData,
+	}
+	if len(md) > 0 {
+		opt.ReqMd = md[0]
 	}
 	fullName := string(req.ProtoReflect().Descriptor().FullName())
 	v2 := strings.SplitN(fullName, ".", 2)

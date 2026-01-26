@@ -42,7 +42,7 @@ func NewEtcdDiscovery(ctx context.Context, serviceGroup string, opt *EtcdOpt) (s
 		return nil, err
 	}
 
-	if opt.LeaseTTL == 0 {
+	if opt.LeaseTTL <= 0 {
 		opt.LeaseTTL = defaultTimeToLiveSeconds
 	}
 
@@ -107,12 +107,14 @@ func (e *etcdImp) Start(wg *sync.WaitGroup) <-chan error {
 	}
 	go func() {
 		defer func() {
+			if r := recover(); r != nil {
+				mlog.Errorf("etcd run panic error: %v", r)
+			}
+		}()
+		defer func() {
 			e.onStop()
 			if wg != nil {
 				wg.Done()
-			}
-			if r := recover(); r != nil {
-				mlog.Errorf("etcd run panic error: %v", r)
 			}
 		}()
 		for {
