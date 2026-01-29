@@ -8,12 +8,13 @@ import (
 var Config *AppConfig
 
 type AppConfig struct {
+	ServerId       int    `json:"server_id" mapstructure:"server_id"`
+	AppVersion     string `json:"app_version" mapstructure:"app_version"`
+	TimezoneOffset int    `json:"timezone_offset" mapstructure:"timezone_offset"` //时区偏移 秒
 	LogConfig      `json:",inline" mapstructure:",inline"`
 	RpcConfig      `json:",inline" mapstructure:",inline"`
 	RedisConfig    `json:",inline" mapstructure:",inline"`
 	MongoUri       string `json:"mongo_uri" mapstructure:"mongo_uri"`
-	ServerId       int    `json:"server_id" mapstructure:"server_id"`
-	TimezoneOffset int    `json:"timezone_offset" mapstructure:"timezone_offset"` //时区偏移 秒
 	IsDebug        bool   `json:"is_debug" mapstructure:"is_debug"`
 	PprofPort      int    `json:"pprof_port" mapstructure:"pprof_port"`
 }

@@ -347,7 +347,7 @@ func (rc *RpcContext) SerializeResponse(marshaler *proto.MarshalOptions) {
 	}
 	byteOrder.PutUint32(buf[:msgLenSize], uint32(len(data)))
 	if len(data) == len(buf[msgLenSize:]) {
-		mlog.Debugf("rpc server serializeResponse async send response %v", rc.Conn.c.IsActive())
+		mlog.Debugf("rpc server serializeResponse sync send response %v", rc.Conn.c.IsActive())
 		rc.Conn.mtx.Lock()
 		defer rc.Conn.mtx.Unlock()
 		if err = rc.Conn.c.Writer().Append(buffer); err != nil {

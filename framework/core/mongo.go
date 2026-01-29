@@ -95,10 +95,6 @@ func (m *MongoImpl) WriteClient() *mongo.Client {
 	return m.client
 }
 
-func (m *MongoImpl) OperatorTimeout() time.Duration {
-	return 10 * time.Second
-}
-
 func (m *MongoImpl) GetActiveConnections() int {
 	return m.monitor.GetActiveConnections()
 }

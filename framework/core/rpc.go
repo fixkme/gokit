@@ -77,6 +77,22 @@ func (m *RpcModule) Call(serviceName string, cb rpc.RPCReq) (proto.Message, erro
 	return m.rpcer.Call(serviceName, cb)
 }
 
+func (m *RpcModule) SyncCall(serviceName string, req, resp proto.Message, timeout time.Duration, md ...*rpc.Meta) (err error) {
+	_, err = m.rpcer.Call(serviceName, func(ctx context.Context, cc *rpc.ClientConn) (proto.Message, error) {
+		err = rpc.SyncCall(ctx, cc, req, resp, timeout, md...)
+		return nil, nil
+	})
+	return
+}
+
+func (m *RpcModule) AsyncCallWithoutResp(serviceName string, req proto.Message, md ...*rpc.Meta) (err error) {
+	_, err = m.rpcer.Call(serviceName, func(ctx context.Context, cc *rpc.ClientConn) (proto.Message, error) {
+		err = rpc.AsyncCallWithoutResp(ctx, cc, req, md...)
+		return nil, nil
+	})
+	return
+}
+
 func (m *RpcModule) RegisterService(serviceName string, cb func(rpcSrv rpc.ServiceRegistrar, nodeName string) error) error {
 	return m.rpcer.RegisterService(serviceName, false, cb)
 }
