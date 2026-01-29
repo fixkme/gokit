@@ -179,6 +179,7 @@ func (s *Server) handler(mc *SvrMuxConn, msg *RpcRequestMessage) {
 	rc := new(RpcContext)
 	rc.Conn = mc
 	rc.Req = msg
+	rc.ReplyMd = &Meta{}
 
 	var md *MethodDesc
 	serviceInfo, ok := s.services[msg.ServiceName]

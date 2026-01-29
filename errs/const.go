@@ -6,3 +6,9 @@ const (
 	ErrCode_Unmarshal = 2
 	ErrCode_Marshal   = 3
 )
+
+var (
+	Unknown   = CreateCodeError(ErrCode_Unknown, "UNKNOWN")
+	Unmarshal = CreateCodeError(ErrCode_Unmarshal, "UNMARSHAL")
+	Marshal   = CreateCodeError(ErrCode_Marshal, "MARSHAL")
+)
