@@ -1,11 +1,12 @@
 package redis
 
 import (
+	"context"
 	"fmt"
 	"time"
 
 	"github.com/fixkme/gokit/mlog"
-	"github.com/go-redis/redis"
+	"github.com/redis/go-redis/v9"
 )
 
 const (
@@ -22,16 +23,18 @@ type RedisImpl struct {
 func NewRedis(mode string, opts any) (*RedisImpl, error) {
 	var err error
 	db := &RedisImpl{}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
 	switch mode {
 	case RedisMode_Cluster:
 		db.cluster = redis.NewClusterClient(opts.(*redis.ClusterOptions))
-		err = db.cluster.Ping().Err()
+		err = db.cluster.Ping(ctx).Err()
 	case RedisMode_Sentinel:
 		db.client = redis.NewFailoverClient(opts.(*redis.FailoverOptions))
-		err = db.client.Ping().Err()
+		err = db.client.Ping(ctx).Err()
 	default: // 默认single模式
 		db.client = redis.NewClient(opts.(*redis.Options))
-		err = db.client.Ping().Err()
+		err = db.client.Ping(ctx).Err()
 	}
 
 	if err != nil {
@@ -88,8 +91,8 @@ type LoadCacheCB func(db *RedisImpl, cachePtr interface{}) error
 // cachePtr 指向缓存的指针
 // cb 收到订阅消息的回调函数
 // loadCB 加载缓存的回调函数
-func Pubsub(pattern string, stop *bool, db *RedisImpl, cachePtr interface{}, cb PubsubCB, loadCB LoadCacheCB) (*redis.PubSub, error) {
-	pubsub, err := subscribe(pattern, db)
+func Pubsub(ctx context.Context, pattern string, stop *bool, db *RedisImpl, cachePtr interface{}, cb PubsubCB, loadCB LoadCacheCB) (*redis.PubSub, error) {
+	pubsub, err := subscribe(ctx, pattern, db)
 	if err != nil {
 		return nil, err
 	}
@@ -98,34 +101,34 @@ func Pubsub(pattern string, stop *bool, db *RedisImpl, cachePtr interface{}, cb 
 	go func(lstop *bool, lpubsub *redis.PubSub, lcachePtr interface{}) {
 		defer func() {
 			if r := recover(); r != nil {
-				mlog.Error("redis Pubsub routinue recover error %v\n", r)
+				mlog.Errorf("redis Pubsub routinue recover error %v\n", r)
 			}
 			mlog.Info("redis pubsub routinue quited")
 		}()
 		for {
-			received, err := lpubsub.Receive()
+			received, err := lpubsub.Receive(ctx)
 			if err != nil {
 				if *lstop {
-					mlog.Info("redis pubsub stopped on error %s, quit now", err)
+					mlog.Infof("redis pubsub stopped on error %v, quit now", err)
 					return
 				}
-				mlog.Info("redis pubsub error %s, retry after %s", err, retryDur)
+				mlog.Infof("redis pubsub error %v, retry after %v", err, retryDur)
 				time.Sleep(retryDur)
 				continue
 			}
 			switch v := received.(type) {
 			case *redis.Message:
 				if err := cb(v, db, lcachePtr); err != nil {
-					mlog.Info("Pubsub onTaskSubscribe %s error %s", v.Channel, err)
+					mlog.Infof("Pubsub onTaskSubscribe %s error %s", v.Channel, err)
 				}
 			case *redis.Subscription:
 				if err := loadCB(db, cachePtr); err != nil {
-					mlog.Info("pubsub loadCB error %s", err)
+					mlog.Infof("pubsub loadCB error %s", err)
 				}
 			case *redis.Pong:
 				mlog.Info("pubsub recv Pong")
 			default:
-				mlog.Info("pubsub recv default %#v", v)
+				mlog.Infof("pubsub recv default %#v", v)
 			}
 		}
 	}(stop, pubsub, cachePtr)
@@ -133,12 +136,12 @@ func Pubsub(pattern string, stop *bool, db *RedisImpl, cachePtr interface{}, cb 
 }
 
 // 订阅redis消息
-func subscribe(channel string, db *RedisImpl) (*redis.PubSub, error) {
+func subscribe(ctx context.Context, channel string, db *RedisImpl) (*redis.PubSub, error) {
 	var pubsub *redis.PubSub
 	if db.client != nil {
-		pubsub = db.client.PSubscribe(channel)
+		pubsub = db.client.PSubscribe(ctx, channel)
 	} else if db.cluster != nil {
-		pubsub = db.cluster.PSubscribe(channel)
+		pubsub = db.cluster.PSubscribe(ctx, channel)
 	}
 	if pubsub == nil {
 		return nil, fmt.Errorf("redis subscribe %s failed, nil pubsub", channel)

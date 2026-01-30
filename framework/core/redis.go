@@ -7,7 +7,7 @@ import (
 
 	rdb "github.com/fixkme/gokit/db/redis"
 	"github.com/fixkme/gokit/framework/config"
-	"github.com/go-redis/redis"
+	"github.com/redis/go-redis/v9"
 )
 
 var Redis *rdb.RedisImpl

@@ -1,7 +1,7 @@
 #### 后端kit，旨在快速构建游戏后端
 
 ##### 1、功能介绍
-- wsg: 用[gnet](https://github.com/panjf2000/gnet)实现的websocket gate server
+- wsg: 用[gnet/v2](https://github.com/panjf2000/gnet)实现的websocket gate server
    * 有限数量的协程处理io，支持跨协程路由数据，也支持在本io协程路由
    * 不支持压缩，因为RFC 6455只是把压缩作为可选功能，另外现在数据都是protobuf，有一定带宽的优化，并且可以在用户层进行压缩解压数据
 - rpc: 用[netpoll](https://github.com/cloudwego/netpoll)实现的rpc server和client
