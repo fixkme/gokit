@@ -15,5 +15,5 @@ type RpcClient interface {
 type RPCReg func(serv ServiceRegistrar, nodeName string) error
 
 type RpcServer interface {
-	RegisterService(serviceName string, cb GRPCReg) error
+	RegisterService(serviceName string, cb RPCReg) error
 }

@@ -175,7 +175,6 @@ func (s *Server) register(sd *ServiceDesc, ss any) {
 }
 
 func (s *Server) handler(mc *SvrMuxConn, msg *RpcRequestMessage) {
-	//mlog.Debug("%d start handler rpc msg:%s", g.GoroutineID(), msg.String())
 	rc := new(RpcContext)
 	rc.Conn = mc
 	rc.Req = msg
@@ -199,9 +198,7 @@ func (s *Server) handler(mc *SvrMuxConn, msg *RpcRequestMessage) {
 	rc.SrvImpl = serviceInfo.serviceImpl
 	rc.Method = md.Handler
 
-	// handler msg，因为写回客户端操作可能跨协程，worker协程或者业务处理logic协程，所以传递s.serializeResponse
 	s.opt.HandlerFunc(rc)
-	//mlog.Debug("%d succeed handler rpc msg:%s", g.GoroutineID(), msg.String())
 }
 
 const msgLenSize = 4 //32bits uint32
