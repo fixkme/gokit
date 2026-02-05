@@ -175,10 +175,9 @@ func (s *Server) register(sd *ServiceDesc, ss any) {
 }
 
 func (s *Server) handler(mc *SvrMuxConn, msg *RpcRequestMessage) {
-	rc := new(RpcContext)
+	rc := rpcContextPool.Get()
 	rc.Conn = mc
 	rc.Req = msg
-	rc.ReplyMd = &Meta{}
 
 	var md *MethodDesc
 	serviceInfo, ok := s.services[msg.ServiceName]
@@ -303,6 +302,8 @@ type RpcContext struct {
 }
 
 func (rc *RpcContext) SerializeResponse(marshaler *proto.MarshalOptions) {
+	defer rpcContextPool.Put(rc)
+
 	if !rc.Conn.c.IsActive() {
 		mlog.Warn("server conn is not active when serializing response")
 		return
