@@ -16,9 +16,9 @@ type ServerInterface interface {
 	Stop(context.Context) error
 }
 
-type Handler func(ctx context.Context, req proto.Message) (proto.Message, error)
+type MsgHandler func(ctx context.Context, req proto.Message) (proto.Message, error)
 
-type MethodHandler func(srv any) (proto.Message, Handler)
+type MethodHandler func(srv any) (proto.Message, MsgHandler)
 
 type MethodDesc struct {
 	MethodName string

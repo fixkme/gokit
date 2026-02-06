@@ -2,7 +2,9 @@ package core
 
 import (
 	"context"
+	"errors"
 	"runtime"
+	"runtime/debug"
 	"strings"
 	"time"
 
@@ -21,8 +23,8 @@ var (
 
 type RpcModule struct {
 	rpcConfig *config.RpcConfig
-	serverOpt *rpc.ServerOpt
-	etcdOpt   *etcd.EtcdOpt
+	serverOpt *rpc.ServerOptions
+	etcdOpt   *etcd.EtcdOptions
 	rpcer     *rpc.RpcImp
 	name      string
 }
@@ -45,16 +47,18 @@ func InitRpcModule(name string, handlerFunc rpc.RpcHandler, conf *config.RpcConf
 	}
 	pollerNum := conf.RpcPollerNum
 	if pollerNum == 0 {
-		pollerNum = runtime.NumCPU()
+		pollerNum = max(runtime.NumCPU()/2, 1)
 	}
-	serverOpt := &rpc.ServerOpt{
-		ListenAddr:  listenAddr,
-		PollerNum:   pollerNum,
-		PollOpts:    pollerOpts,
-		HandlerFunc: handlerFunc,
+	serverOpt := &rpc.ServerOptions{
+		ListenAddr:     listenAddr,
+		PollerNum:      pollerNum,
+		PollOpts:       pollerOpts,
+		HandlerFunc:    handlerFunc,
+		MsgUnmarshaler: MsgUnmarshaler,
+		MsgMarshaler:   MsgMarshaler,
 	}
 	etcdAddrs := conf.EtcdEndpoints
-	etcdOpt := &etcd.EtcdOpt{
+	etcdOpt := &etcd.EtcdOptions{
 		LeaseTTL: conf.EtcdLeaseTTL,
 		Config: clientv3.Config{
 			Endpoints:            strings.Split(etcdAddrs, ","),
@@ -149,16 +153,18 @@ var (
 
 // 默认RpcHandler
 func RpcHandlerFunc(rc *rpc.RpcContext) {
-	argMsg, logicHandler := rc.Method(rc.SrvImpl)
-	if err := MsgUnmarshaler.Unmarshal(rc.Req.Payload, argMsg); err == nil {
-		rc.Reply, rc.ReplyErr = logicHandler(context.Background(), argMsg)
-	} else {
-		rc.ReplyErr = err
-	}
+	defer func() {
+		if err := recover(); err != nil {
+			mlog.Errorf("rpc handler panic: %v\n%s", err, debug.Stack())
+			rc.ReplyErr = errors.New("rpc handler exception")
+		}
+		rc.SerializeResponse()
+	}()
+	argMsg, logicHandler := rc.ReqMsg, rc.Handler
+	rc.Reply, rc.ReplyErr = logicHandler(context.Background(), argMsg)
 	if rc.ReplyErr == nil {
-		mlog.Debugf("rpc handler msg succeed, method:%s, req_data:%v, rsp_data:%v", rc.Req.MethodName, argMsg, rc.Reply)
+		mlog.Debugf("rpc handler msg succeed, method:%s, req_data:%v, rsp_data:%v", rc.MethodName, argMsg, rc.Reply)
 	} else {
-		mlog.Errorf("rpc handler msg failed, method:%s, req_data:%v, err:%v", rc.Req.MethodName, argMsg, rc.ReplyErr)
+		mlog.Errorf("rpc handler msg failed, method:%s, req_data:%v, err:%v", rc.MethodName, argMsg, rc.ReplyErr)
 	}
-	rc.SerializeResponse(&MsgMarshaler)
 }

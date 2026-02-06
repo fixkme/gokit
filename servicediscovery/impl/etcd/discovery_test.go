@@ -16,7 +16,7 @@ func TestEtcd(t *testing.T) {
 	mlog.UseDefaultLogger(context.Background(), &sync.WaitGroup{}, "", "mlog", mlog.DebugLevel, true)
 	ctx, cancel := context.WithTimeout(context.Background(), 30000*time.Second)
 	defer cancel()
-	conf := &EtcdOpt{
+	conf := &EtcdOptions{
 		Config: clientv3.Config{
 			Endpoints:            []string{"127.0.0.1:2379"},
 			DialTimeout:          5 * time.Second,

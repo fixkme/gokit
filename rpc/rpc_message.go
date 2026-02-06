@@ -24,6 +24,14 @@ var rpcMsgMarshaler = proto.MarshalOptions{
 	Deterministic: false, //是否对map进行排序，以此保证输出的二进制数据是相同的。rpc消息是不需要的
 }
 
+type Unmarshaler interface {
+	Unmarshal(b []byte, m proto.Message) error
+}
+
+type Marshaler interface {
+	Marshal(m proto.Message) ([]byte, error)
+}
+
 func (msg *RpcResponseMessage) ParserError() error {
 	if msg.Error != "" {
 		if msg.Ecode != 0 {

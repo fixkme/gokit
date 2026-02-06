@@ -26,7 +26,7 @@ type RpcImp struct {
 	cancel context.CancelFunc
 }
 
-func NewRpc(pctx context.Context, rpcAddr, serviceGroup string, etcdConf *etcd.EtcdOpt, serverOpt *ServerOpt) (*RpcImp, error) {
+func NewRpc(pctx context.Context, rpcAddr, serviceGroup string, etcdConf *etcd.EtcdOptions, serverOpt *ServerOptions) (*RpcImp, error) {
 	if rpcAddr == "" {
 		return nil, errors.New("rpcAddr is empty")
 	}
@@ -157,14 +157,14 @@ func (imp *RpcImp) CallAll(serviceName string, cb RPCReq) ([]proto.Message, erro
 }
 
 func (imp *RpcImp) connectTo(rpcAddr string) (*ClientConn, error) {
-	opt := &ClientOpt{
+	opt := &ClientOptions{
 		DailTimeout: time.Second * 3,
 		OnClientClose: func(conn netpoll.Connection) error {
 			mlog.Infof("%s rpc client is Closed", conn.RemoteAddr().String())
 			return nil
 		},
 	}
-	cli, err := NewClientConn("tcp4", rpcAddr, opt)
+	cli, err := NewClientConn("tcp", rpcAddr, opt)
 	if err != nil {
 		return nil, err
 	}

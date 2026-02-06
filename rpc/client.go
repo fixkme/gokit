@@ -14,7 +14,7 @@ import (
 )
 
 type ClientConn struct {
-	opt      *ClientOpt
+	opt      *ClientOptions
 	conn     netpoll.Connection
 	wmtx     sync.Mutex // 写保护
 	network  string
@@ -31,7 +31,7 @@ type ClientConn struct {
 	updateTimerTrig chan int64
 }
 
-func NewClientConn(network, address string, opt *ClientOpt) (*ClientConn, error) {
+func NewClientConn(network, address string, opt *ClientOptions) (*ClientConn, error) {
 	if opt == nil {
 		opt = defaultClientOpt
 	} else {
@@ -56,7 +56,7 @@ func NewClientConn(network, address string, opt *ClientOpt) (*ClientConn, error)
 	return cliConn, nil
 }
 
-func initClientOpt(opt *ClientOpt) {
+func initClientOpt(opt *ClientOptions) {
 	if opt.Marshaler == nil {
 		opt.Marshaler = defaultClientOpt.Marshaler
 	}
@@ -66,7 +66,7 @@ func initClientOpt(opt *ClientOpt) {
 }
 
 var (
-	defaultClientOpt = &ClientOpt{
+	defaultClientOpt = &ClientOptions{
 		DailTimeout: time.Second * 5,
 		Marshaler:   &proto.MarshalOptions{AllowPartial: true},
 		Unmarshaler: &proto.UnmarshalOptions{AllowPartial: true, RecursionLimit: 100},

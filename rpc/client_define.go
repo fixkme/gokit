@@ -16,7 +16,7 @@ type ClientConnInterface interface {
 	Invoke(ctx context.Context, service, method string, req any, outRsp proto.Message, opts ...*CallOption) (rspMd *Meta, rspData []byte, err error)
 }
 
-type ClientOpt struct {
+type ClientOptions struct {
 	DailTimeout   time.Duration
 	OnClientClose func(netpoll.Connection) error
 	Marshaler     *proto.MarshalOptions

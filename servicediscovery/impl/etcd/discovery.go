@@ -30,13 +30,13 @@ const (
 	eventType_Delete = 1
 )
 
-type EtcdOpt struct {
+type EtcdOptions struct {
 	clientv3.Config `json:",inline"`
 	LeaseTTL        int64 `json:"leaseTTL"`
 }
 
 // NewEtcdDiscovery 创建一个etcd实例
-func NewEtcdDiscovery(ctx context.Context, serviceGroup string, opt *EtcdOpt) (sd.Discovery, error) {
+func NewEtcdDiscovery(ctx context.Context, serviceGroup string, opt *EtcdOptions) (sd.Discovery, error) {
 	cli, err := clientv3.New(opt.Config)
 	if err != nil {
 		return nil, err

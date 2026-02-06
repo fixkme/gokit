@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"math/rand"
 	"reflect"
 	sync "sync"
 	"sync/atomic"
@@ -17,43 +16,37 @@ import (
 )
 
 type Server struct {
-	opt      *ServerOpt
+	opt      *ServerOptions
 	listener netpoll.Listener
 	evloop   netpoll.EventLoop
+	services map[string]*serviceInfo // service name -> service info
 	conns    map[netpoll.Connection]*SvrMuxConn
+	ctx      context.Context
 	closed   atomic.Bool // server closed
-
-	services   map[string]*serviceInfo // service name -> service info
-	processors []*rpcProcessor
-	quit       chan struct{}
-	wg         sync.WaitGroup
-	ctx        context.Context
 }
 
-type ServerOpt struct {
-	ListenAddr        string //在某些情况不能和rpcAddr一样，比如域名、k8s service，所以单独控制
-	PollerNum         int
-	PollOpts          []netpoll.Option
-	ProcessorSize     int64
-	ProcessorTaskSize int64
-
-	DispatcherFunc DispatchHash
+type ServerOptions struct {
+	ListenAddr     string //在某些情况不能和rpcAddr一样，比如域名、k8s service，所以单独控制
+	PollerNum      int
+	BufferSize     int // default size of a new connection's read LinkBuffer
+	PollOpts       []netpoll.Option
 	HandlerFunc    RpcHandler
+	MsgUnmarshaler Unmarshaler
+	MsgMarshaler   Marshaler
 }
 
 type RpcHandler func(rc *RpcContext)
-type DispatchHash func(netpoll.Connection, *RpcRequestMessage) int
 
-func NewServer(opt *ServerOpt, ctx context.Context) (*Server, error) {
+func NewServer(opt *ServerOptions, ctx context.Context) (*Server, error) {
 	s := &Server{
 		services: make(map[string]*serviceInfo),
 		conns:    make(map[netpoll.Connection]*SvrMuxConn),
-		quit:     make(chan struct{}),
 		opt:      opt,
 		ctx:      ctx,
 	}
 	pollConfig := netpoll.Config{
-		PollerNum: s.opt.PollerNum,
+		PollerNum:  s.opt.PollerNum,
+		BufferSize: s.opt.BufferSize,
 	}
 	err := netpoll.Configure(pollConfig)
 	if err != nil {
@@ -72,50 +65,33 @@ func NewServer(opt *ServerOpt, ctx context.Context) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
+	s.opt.PollOpts = nil // clean after use
 
-	if opt.HandlerFunc == nil {
-		unmarshaler := proto.UnmarshalOptions{}
-		marshaler := proto.MarshalOptions{}
-		opt.HandlerFunc = func(rc *RpcContext) {
-			argMsg, handler := rc.Method(rc.SrvImpl)
-			if err := unmarshaler.Unmarshal(rc.Req.Payload, argMsg); err != nil {
-				rc.ReplyErr = err
-			} else {
-				rc.Reply, rc.ReplyErr = handler(context.Background(), argMsg)
-			}
-			rc.SerializeResponse(&marshaler)
-			// 或者投递给另一个actor协程 ...
-		}
-	}
-	if opt.ProcessorSize > 0 {
-		if opt.ProcessorTaskSize <= 0 {
-			opt.ProcessorTaskSize = 1024
-		}
-		// 异步模式
-		for i := 0; i < int(opt.ProcessorSize); i++ {
-			s.processors = append(s.processors, &rpcProcessor{
-				server: s,
-				inChan: make(chan *rpcTask, opt.ProcessorTaskSize),
-			})
-		}
-		if opt.DispatcherFunc == nil {
-			// 默认随机分配
-			opt.DispatcherFunc = func(c netpoll.Connection, msg *RpcRequestMessage) int {
-				return rand.Int()
-			}
-		}
-	}
+	opt.setDefault()
+
 	return s, nil
 }
 
-func (s *Server) Run() error {
-	for i := 0; i < len(s.processors); i++ {
-		s.wg.Add(1)
-		go s.processors[i].run(s.quit)
+func (opt *ServerOptions) setDefault() {
+	if opt.MsgUnmarshaler == nil {
+		opt.MsgUnmarshaler = proto.UnmarshalOptions{}
 	}
+	if opt.MsgMarshaler == nil {
+		opt.MsgMarshaler = proto.MarshalOptions{}
+	}
+	if opt.HandlerFunc == nil {
+		opt.HandlerFunc = func(rc *RpcContext) {
+			argMsg, handler := rc.ReqMsg, rc.Handler
+			rc.Reply, rc.ReplyErr = handler(context.Background(), argMsg)
+			rc.SerializeResponse()
+			// 或者投递给另一个actor协程执行 ...
+		}
+	}
+}
+
+func (s *Server) Run() error {
 	if err := s.evloop.Serve(s.listener); err != nil {
 		mlog.Errorf("rpc server Run err:%s", err)
-		close(s.quit)
 		return err
 	}
 	mlog.Info("rpc server Run exit")
@@ -133,17 +109,10 @@ func (s *Server) Stop(ctx context.Context) error {
 			mlog.Errorf("rpc conn close error %v", err)
 		}
 	}
-	close(s.quit)
-	s.wg.Wait()
 	if err := s.evloop.Shutdown(ctx); err != nil {
 		return err
 	}
 	return nil
-}
-
-type rpcTask struct {
-	conn *SvrMuxConn
-	msg  *RpcRequestMessage
 }
 
 func (s *Server) RegisterService(sd *ServiceDesc, ss any) {
@@ -177,7 +146,10 @@ func (s *Server) register(sd *ServiceDesc, ss any) {
 func (s *Server) handler(mc *SvrMuxConn, msg *RpcRequestMessage) {
 	rc := rpcContextPool.Get()
 	rc.Conn = mc
-	rc.Req = msg
+	rc.Seq = msg.Seq
+	rc.MethodName = msg.MethodName
+	rc.ReqMd = msg.Md
+	rc.marshaler = s.opt.MsgMarshaler
 
 	var md *MethodDesc
 	serviceInfo, ok := s.services[msg.ServiceName]
@@ -185,17 +157,21 @@ func (s *Server) handler(mc *SvrMuxConn, msg *RpcRequestMessage) {
 		md, ok = serviceInfo.methods[msg.MethodName]
 		if !ok {
 			rc.ReplyErr = fmt.Errorf("not found method:%s", msg.MethodName)
-			rc.SerializeResponse(nil)
+			rc.SerializeResponse()
 			return
 		}
 	} else {
 		rc.ReplyErr = fmt.Errorf("not found service:%s", msg.ServiceName)
-		rc.SerializeResponse(nil)
+		rc.SerializeResponse()
 		return
 	}
 
-	rc.SrvImpl = serviceInfo.serviceImpl
-	rc.Method = md.Handler
+	rc.ReqMsg, rc.Handler = md.Handler(serviceInfo.serviceImpl)
+	if err := s.opt.MsgUnmarshaler.Unmarshal(msg.Payload, rc.ReqMsg); err != nil {
+		rc.ReplyErr = err
+		rc.SerializeResponse()
+		return
+	}
 
 	s.opt.HandlerFunc(rc)
 }
@@ -248,60 +224,25 @@ func (s *Server) onMsg(ctx context.Context, c netpoll.Connection) (err error) {
 		return
 	}
 
-	if pn := len(s.processors); pn > 0 {
-		// 分发消息
-		hashCode := s.opt.DispatcherFunc(c, msg)
-		idx := hashCode % pn
-		task := &rpcTask{conn: mc, msg: msg}
-		select {
-		case <-ctx.Done():
-			err = ctx.Err()
-			return
-		case s.processors[idx].inChan <- task:
-		default:
-			mlog.Errorf("rpc processors[%d] inChan is full!!!", idx)
-			s.processors[idx].inChan <- task
-		}
-	} else {
-		// 直接处理
-		s.handler(mc, msg)
-	}
+	s.handler(mc, msg)
 	return
 }
 
-type rpcProcessor struct {
-	server *Server
-	inChan chan *rpcTask
-}
-
-func (p *rpcProcessor) run(done <-chan struct{}) {
-	defer func() {
-		p.server.wg.Done()
-	}()
-	for {
-		select {
-		case <-done:
-			return
-		case v, ok := <-p.inChan:
-			if ok {
-				p.server.handler(v.conn, v.msg)
-			}
-		}
-	}
-}
-
 type RpcContext struct {
-	Conn    *SvrMuxConn
-	Req     *RpcRequestMessage
-	SrvImpl any
-	Method  MethodHandler
+	Conn       *SvrMuxConn
+	Seq        uint32
+	MethodName string
+	ReqMd      *Meta
+	ReqMsg     proto.Message
+	Handler    MsgHandler
 
-	Reply    proto.Message
-	ReplyErr error
-	ReplyMd  *Meta
+	Reply     proto.Message
+	ReplyErr  error
+	ReplyMd   *Meta
+	marshaler Marshaler
 }
 
-func (rc *RpcContext) SerializeResponse(marshaler *proto.MarshalOptions) {
+func (rc *RpcContext) SerializeResponse() {
 	defer rpcContextPool.Put(rc)
 
 	if !rc.Conn.c.IsActive() {
@@ -310,10 +251,10 @@ func (rc *RpcContext) SerializeResponse(marshaler *proto.MarshalOptions) {
 	}
 
 	rsp := new(RpcResponseMessage)
-	rsp.Seq = rc.Req.Seq
+	rsp.Seq = rc.Seq
 	rsp.Md = rc.ReplyMd
 	if rerr := rc.ReplyErr; rerr == nil {
-		rspData, err := marshaler.Marshal(rc.Reply)
+		rspData, err := rc.marshaler.Marshal(rc.Reply)
 		if err == nil {
 			rsp.Payload = rspData
 		} else {
@@ -347,14 +288,8 @@ func (rc *RpcContext) SerializeResponse(marshaler *proto.MarshalOptions) {
 	byteOrder.PutUint32(buf[:msgLenSize], uint32(len(data)))
 	if len(data) == len(buf[msgLenSize:]) {
 		mlog.Debugf("rpc server serializeResponse sync send response %v", rc.Conn.c.IsActive())
-		rc.Conn.mtx.Lock()
-		defer rc.Conn.mtx.Unlock()
-		if err = rc.Conn.c.Writer().Append(buffer); err != nil {
-			mlog.Errorf("rpc server serializeResponse Writer.Append err:%v\n", err)
-			return
-		}
-		if err = rc.Conn.c.Writer().Flush(); err != nil {
-			mlog.Errorf("rpc server serializeResponse Writer.Flush err:%v\n", err)
+		if err = rc.Conn.FlushBuffer(buffer); err != nil {
+			mlog.Errorf("rpc server serializeResponse FlushBuffer err:%v\n", err)
 			return
 		}
 	} else {
@@ -371,4 +306,16 @@ func newSvrMuxConn(conn netpoll.Connection) *SvrMuxConn {
 type SvrMuxConn struct {
 	c   netpoll.Connection
 	mtx sync.Mutex
+}
+
+func (mc *SvrMuxConn) FlushBuffer(buffer *netpoll.LinkBuffer) (err error) {
+	mc.mtx.Lock()
+	defer mc.mtx.Unlock()
+	if err = mc.c.Writer().Append(buffer); err != nil {
+		return
+	}
+	if err = mc.c.Writer().Flush(); err != nil {
+		return
+	}
+	return
 }
