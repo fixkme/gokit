@@ -155,7 +155,7 @@ var (
 func RpcHandlerFunc(rc *rpc.RpcContext) {
 	defer func() {
 		if err := recover(); err != nil {
-			mlog.Errorf("rpc handler panic: %v\n%s", err, debug.Stack())
+			mlog.Errorf("rpc handler panic, %s, %v\n%s", rc.MethodName, err, debug.Stack())
 			rc.ReplyErr = errors.New("rpc handler exception")
 		}
 		rc.SerializeResponse()
@@ -163,8 +163,8 @@ func RpcHandlerFunc(rc *rpc.RpcContext) {
 	argMsg, logicHandler := rc.ReqMsg, rc.Handler
 	rc.Reply, rc.ReplyErr = logicHandler(context.Background(), argMsg)
 	if rc.ReplyErr == nil {
-		mlog.Debugf("rpc handler msg succeed, method:%s, req_data:%v, rsp_data:%v", rc.MethodName, argMsg, rc.Reply)
+		mlog.Debugf("rpc handler msg succeed, method:%s, req_data:{%v}, rsp_data:{%v}", rc.MethodName, argMsg, rc.Reply)
 	} else {
-		mlog.Errorf("rpc handler msg failed, method:%s, req_data:%v, err:%v", rc.MethodName, argMsg, rc.ReplyErr)
+		mlog.Errorf("rpc handler msg failed, method:%s, req_data:{%v}, err:%v", rc.MethodName, argMsg, rc.ReplyErr)
 	}
 }

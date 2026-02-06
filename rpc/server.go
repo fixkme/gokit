@@ -84,7 +84,7 @@ func (opt *ServerOptions) setDefault() {
 			argMsg, handler := rc.ReqMsg, rc.Handler
 			rc.Reply, rc.ReplyErr = handler(context.Background(), argMsg)
 			rc.SerializeResponse()
-			// 或者投递给另一个actor协程执行 ...
+			// 或者投递给另一个协程执行 ...
 		}
 	}
 }

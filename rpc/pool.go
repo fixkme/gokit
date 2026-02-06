@@ -24,7 +24,6 @@ func (p *_RpcContextPool) Get() *RpcContext {
 }
 
 func (p *_RpcContextPool) Put(rc *RpcContext) {
-	p.Pool.Put(rc)
 	rc.Conn = nil
 	rc.MethodName = ""
 	rc.ReqMd = nil
@@ -33,4 +32,6 @@ func (p *_RpcContextPool) Put(rc *RpcContext) {
 	rc.Reply = nil
 	rc.ReplyErr = nil
 	rc.ReplyMd = nil
+
+	p.Pool.Put(rc)
 }
