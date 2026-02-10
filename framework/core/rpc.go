@@ -24,6 +24,7 @@ var (
 type RpcModule struct {
 	rpcConfig *config.RpcConfig
 	serverOpt *rpc.ServerOptions
+	cliOpt    *rpc.ClientOptions
 	etcdOpt   *etcd.EtcdOptions
 	rpcer     *rpc.RpcImp
 	name      string
@@ -68,9 +69,19 @@ func InitRpcModule(name string, handlerFunc rpc.RpcHandler, conf *config.RpcConf
 			AutoSyncInterval:     15 * time.Second,
 		},
 	}
+	clientOpt := &rpc.ClientOptions{
+		DailTimeout: 3 * time.Second,
+		OnClientClose: func(c netpoll.Connection) error {
+			mlog.Infof("%s rpc client conn is closed", c.RemoteAddr().String())
+			return nil
+		},
+		MsgMarshaler:   MsgMarshaler,
+		MsgUnmarshaler: MsgUnmarshaler,
+	}
 	Rpc = &RpcModule{
 		rpcConfig: conf,
 		serverOpt: serverOpt,
+		cliOpt:    clientOpt,
 		etcdOpt:   etcdOpt,
 		name:      name,
 	}
@@ -110,7 +121,7 @@ func (m *RpcModule) UnregisterService(serviceName string) error {
 }
 
 func (m *RpcModule) OnInit() error {
-	rpcTmp, err := rpc.NewRpc(context.Background(), m.rpcConfig.RpcAddr, m.rpcConfig.RpcGroup, m.etcdOpt, m.serverOpt)
+	rpcTmp, err := rpc.NewRpc(context.Background(), m.rpcConfig.RpcAddr, m.rpcConfig.RpcGroup, m.etcdOpt, m.serverOpt, m.cliOpt)
 	if err != nil {
 		return err
 	}

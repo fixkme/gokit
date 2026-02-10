@@ -6,7 +6,6 @@ import (
 	sync "sync"
 	"time"
 
-	"github.com/cloudwego/netpoll"
 	"github.com/fixkme/gokit/mlog"
 	sd "github.com/fixkme/gokit/servicediscovery/discovery"
 	"github.com/fixkme/gokit/servicediscovery/impl/etcd"
@@ -19,6 +18,7 @@ type RpcImp struct {
 	rpcAddr string
 	server  *Server
 
+	cliOpt  *ClientOptions
 	clients map[string]*ClientConn
 	cliMtx  sync.RWMutex
 
@@ -26,7 +26,7 @@ type RpcImp struct {
 	cancel context.CancelFunc
 }
 
-func NewRpc(pctx context.Context, rpcAddr, serviceGroup string, etcdConf *etcd.EtcdOptions, serverOpt *ServerOptions) (*RpcImp, error) {
+func NewRpc(pctx context.Context, rpcAddr, serviceGroup string, etcdConf *etcd.EtcdOptions, serverOpt *ServerOptions, cliOpt *ClientOptions) (*RpcImp, error) {
 	if rpcAddr == "" {
 		return nil, errors.New("rpcAddr is empty")
 	}
@@ -46,6 +46,7 @@ func NewRpc(pctx context.Context, rpcAddr, serviceGroup string, etcdConf *etcd.E
 		etcd:    etcd,
 		rpcAddr: rpcAddr,
 		server:  server,
+		cliOpt:  cliOpt,
 		clients: make(map[string]*ClientConn),
 		ctx:     ctx,
 		cancel:  cancel,
@@ -157,14 +158,7 @@ func (imp *RpcImp) CallAll(serviceName string, cb RPCReq) ([]proto.Message, erro
 }
 
 func (imp *RpcImp) connectTo(rpcAddr string) (*ClientConn, error) {
-	opt := &ClientOptions{
-		DailTimeout: time.Second * 3,
-		OnClientClose: func(conn netpoll.Connection) error {
-			mlog.Infof("%s rpc client is Closed", conn.RemoteAddr().String())
-			return nil
-		},
-	}
-	cli, err := NewClientConn("tcp", rpcAddr, opt)
+	cli, err := NewClientConn("tcp", rpcAddr, imp.cliOpt)
 	if err != nil {
 		return nil, err
 	}

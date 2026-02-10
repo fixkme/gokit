@@ -32,12 +32,7 @@ type ClientConn struct {
 }
 
 func NewClientConn(network, address string, opt *ClientOptions) (*ClientConn, error) {
-	if opt == nil {
-		opt = defaultClientOpt
-	} else {
-		initClientOpt(opt)
-	}
-
+	opt.setDefault()
 	conn, err := netpoll.DialConnection(network, address, opt.DailTimeout)
 	if err != nil {
 		return nil, err
@@ -56,21 +51,19 @@ func NewClientConn(network, address string, opt *ClientOptions) (*ClientConn, er
 	return cliConn, nil
 }
 
-func initClientOpt(opt *ClientOptions) {
-	if opt.Marshaler == nil {
-		opt.Marshaler = defaultClientOpt.Marshaler
+func (opt *ClientOptions) setDefault() {
+	if opt.DailTimeout == 0 {
+		opt.DailTimeout = 3 * time.Second
 	}
-	if opt.Unmarshaler == nil {
-		opt.Unmarshaler = defaultClientOpt.Unmarshaler
+	if opt.MsgUnmarshaler == nil {
+		opt.MsgUnmarshaler = proto.UnmarshalOptions{}
+	}
+	if opt.MsgMarshaler == nil {
+		opt.MsgMarshaler = proto.MarshalOptions{}
 	}
 }
 
 var (
-	defaultClientOpt = &ClientOptions{
-		DailTimeout: time.Second * 5,
-		Marshaler:   &proto.MarshalOptions{AllowPartial: true},
-		Unmarshaler: &proto.UnmarshalOptions{AllowPartial: true, RecursionLimit: 100},
-	}
 	defaultCallOption  = &CallOption{}
 	ErrInvalidReqData  = errors.New("invalid request data")
 	ErrWaitReplyExceed = errors.New("wait reply exceed")
@@ -101,7 +94,7 @@ func (c *ClientConn) Invoke(ctx context.Context, service, method string, req any
 	case []byte:
 		payload = reqVal
 	case proto.Message:
-		payload, err = c.opt.Marshaler.Marshal(reqVal)
+		payload, err = c.opt.MsgMarshaler.Marshal(reqVal)
 		if err != nil {
 			return
 		}
@@ -253,7 +246,7 @@ func (c *ClientConn) decodeRpcRsp(rpcRsp *RpcResponseMessage, out proto.Message)
 		return
 	}
 	if out != nil {
-		if err = c.opt.Unmarshaler.Unmarshal(rpcRsp.Payload, out); err != nil {
+		if err = c.opt.MsgUnmarshaler.Unmarshal(rpcRsp.Payload, out); err != nil {
 			mlog.Errorf("rpc client failed to unmarshal response: %v", err)
 			return
 		}
@@ -407,13 +400,11 @@ func (c *ClientConn) reconnect() error {
 	if err != nil {
 		mlog.Errorf("reconnect, rpc client Dial error %v", err)
 		return err
-	} else {
-		if err := c.conn.Close(); err != nil {
-			mlog.Errorf("reconnect, rpc client Close error %v", err)
-			return err
-		}
-		c.initConn(conn)
 	}
+	if err := c.conn.Close(); err != nil {
+		mlog.Errorf("reconnect, rpc client Close old conn error %v", err)
+	}
+	c.initConn(conn)
 	return nil
 }
 

@@ -17,10 +17,10 @@ type ClientConnInterface interface {
 }
 
 type ClientOptions struct {
-	DailTimeout   time.Duration
-	OnClientClose func(netpoll.Connection) error
-	Marshaler     *proto.MarshalOptions
-	Unmarshaler   *proto.UnmarshalOptions
+	DailTimeout    time.Duration
+	OnClientClose  func(netpoll.Connection) error
+	MsgUnmarshaler Unmarshaler
+	MsgMarshaler   Marshaler
 }
 
 type CallOption struct {

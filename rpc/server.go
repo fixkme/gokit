@@ -216,7 +216,7 @@ func (s *Server) prepare(conn netpoll.Connection) context.Context {
 	w := newSvrWriter(conn, s.opt.WriteChanSize, s.ctx, &s.wg)
 	s.conns.Store(conn, w)
 	conn.AddCloseCallback(func(c netpoll.Connection) error {
-		mlog.Debugf("server conn closed %v", c == conn)
+		mlog.Infof("%s rpc server conn is closed %v", c.RemoteAddr().String(), c == conn)
 		s.conns.Delete(c)
 		w.stop()
 		return nil
@@ -367,7 +367,7 @@ func (w *SvrWriter) beforeClose() {
 		if err := w.c.Writer().Flush(); err != nil {
 			mlog.Errorf("SvrWriter beforeClose flush failed: %v", err)
 		} else {
-			mlog.Info("SvrWriter beforeClose flush success")
+			mlog.Debugf("SvrWriter beforeClose flush success, %s", w.c.RemoteAddr().String())
 		}
 	}
 }
