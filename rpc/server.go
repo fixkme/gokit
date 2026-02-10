@@ -5,7 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
-	sync "sync"
+	"sync"
 	"sync/atomic"
 
 	"github.com/cloudwego/netpoll"
@@ -20,19 +20,21 @@ type Server struct {
 	listener netpoll.Listener
 	evloop   netpoll.EventLoop
 	services map[string]*serviceInfo // service name -> service info
-	conns    map[netpoll.Connection]*SvrMuxConn
+	conns    sync.Map                // map[netpoll.Connection]*SvrWriter
 	ctx      context.Context
+	wg       sync.WaitGroup
 	closed   atomic.Bool // server closed
 }
 
 type ServerOptions struct {
 	ListenAddr     string //在某些情况不能和rpcAddr一样，比如域名、k8s service，所以单独控制
 	PollerNum      int
-	BufferSize     int // default size of a new connection's read LinkBuffer
+	BufferSize     int // size of a new connection's read LinkBuffer, netpoll default=8k
 	PollOpts       []netpoll.Option
 	HandlerFunc    RpcHandler
 	MsgUnmarshaler Unmarshaler
 	MsgMarshaler   Marshaler
+	WriteChanSize  int
 }
 
 type RpcHandler func(rc *RpcContext)
@@ -40,7 +42,7 @@ type RpcHandler func(rc *RpcContext)
 func NewServer(opt *ServerOptions, ctx context.Context) (*Server, error) {
 	s := &Server{
 		services: make(map[string]*serviceInfo),
-		conns:    make(map[netpoll.Connection]*SvrMuxConn),
+		conns:    sync.Map{},
 		opt:      opt,
 		ctx:      ctx,
 	}
@@ -87,6 +89,9 @@ func (opt *ServerOptions) setDefault() {
 			// 或者投递给另一个协程执行 ...
 		}
 	}
+	if opt.WriteChanSize <= 0 {
+		opt.WriteChanSize = 1024
+	}
 }
 
 func (s *Server) Run() error {
@@ -103,12 +108,37 @@ func (s *Server) Stop(ctx context.Context) error {
 		return nil
 	}
 	mlog.Debug("rpc server stop")
-	s.listener.Close()
-	for c := range s.conns {
-		if err := c.Close(); err != nil {
-			mlog.Errorf("rpc conn close error %v", err)
+	if err := s.listener.Close(); err != nil {
+		mlog.Errorf("rpc server close error %v", err)
+	}
+
+	writers := make([]*SvrWriter, 0)
+	s.conns.Range(func(key, value any) bool {
+		writers = append(writers, value.(*SvrWriter))
+		return true
+	})
+
+	// 这里不用stop也行，因为上层rpc module会cancel Server.ctx
+	for _, w := range writers {
+		w.stop()
+	}
+
+	waitDone := make(chan struct{})
+	go func() {
+		s.wg.Wait() // wait svr writer flush over
+		close(waitDone)
+	}()
+	select {
+	case <-ctx.Done():
+	case <-waitDone:
+	}
+
+	for _, w := range writers {
+		if err := w.c.Close(); err != nil {
+			mlog.Errorf("rpc svr conn close error %v", err)
 		}
 	}
+
 	if err := s.evloop.Shutdown(ctx); err != nil {
 		return err
 	}
@@ -143,9 +173,9 @@ func (s *Server) register(sd *ServiceDesc, ss any) {
 	s.services[sd.ServiceName] = info
 }
 
-func (s *Server) handler(mc *SvrMuxConn, msg *RpcRequestMessage) {
+func (s *Server) handler(w *SvrWriter, msg *RpcRequestMessage) {
 	rc := rpcContextPool.Get()
-	rc.Conn = mc
+	rc.Conn = w
 	rc.Seq = msg.Seq
 	rc.MethodName = msg.MethodName
 	rc.ReqMd = msg.Md
@@ -156,19 +186,19 @@ func (s *Server) handler(mc *SvrMuxConn, msg *RpcRequestMessage) {
 	if ok {
 		md, ok = serviceInfo.methods[msg.MethodName]
 		if !ok {
-			rc.ReplyErr = fmt.Errorf("not found method:%s", msg.MethodName)
+			rc.ReplyErr = errs.NotFindMethod.Print(msg.MethodName)
 			rc.SerializeResponse()
 			return
 		}
 	} else {
-		rc.ReplyErr = fmt.Errorf("not found service:%s", msg.ServiceName)
+		rc.ReplyErr = errs.NotFindService.Print(msg.ServiceName)
 		rc.SerializeResponse()
 		return
 	}
 
 	rc.ReqMsg, rc.Handler = md.Handler(serviceInfo.serviceImpl)
 	if err := s.opt.MsgUnmarshaler.Unmarshal(msg.Payload, rc.ReqMsg); err != nil {
-		rc.ReplyErr = err
+		rc.ReplyErr = errs.Unmarshal.Print(err.Error())
 		rc.SerializeResponse()
 		return
 	}
@@ -183,14 +213,15 @@ type connectionContextKey string
 const connectionContextName = connectionContextKey("ConnectionContext")
 
 func (s *Server) prepare(conn netpoll.Connection) context.Context {
-	mc := newSvrMuxConn(conn)
-	s.conns[conn] = mc
+	w := newSvrWriter(conn, s.opt.WriteChanSize, s.ctx, &s.wg)
+	s.conns.Store(conn, w)
 	conn.AddCloseCallback(func(c netpoll.Connection) error {
 		mlog.Debugf("server conn closed %v", c == conn)
-		delete(s.conns, c)
+		s.conns.Delete(c)
+		w.stop()
 		return nil
 	})
-	ctx := context.WithValue(s.ctx, connectionContextName, mc)
+	ctx := context.WithValue(s.ctx, connectionContextName, w)
 	return ctx
 }
 
@@ -203,7 +234,7 @@ func (s *Server) onMsg(ctx context.Context, c netpoll.Connection) (err error) {
 			}
 		}
 	}()
-	mc := ctx.Value(connectionContextName).(*SvrMuxConn)
+	w := ctx.Value(connectionContextName).(*SvrWriter)
 	reader := c.Reader()
 
 	lenBuf, _err := reader.Next(msgLenSize)
@@ -224,12 +255,12 @@ func (s *Server) onMsg(ctx context.Context, c netpoll.Connection) (err error) {
 		return
 	}
 
-	s.handler(mc, msg)
+	s.handler(w, msg)
 	return
 }
 
 type RpcContext struct {
-	Conn       *SvrMuxConn
+	Conn       *SvrWriter
 	Seq        uint32
 	MethodName string
 	ReqMd      *Meta
@@ -246,7 +277,7 @@ func (rc *RpcContext) SerializeResponse() {
 	defer rpcContextPool.Put(rc)
 
 	if !rc.Conn.c.IsActive() {
-		mlog.Warn("server conn is not active when serializing response")
+		mlog.Warnf("server conn is not active when serializing response %s", rc.MethodName)
 		return
 	}
 
@@ -275,47 +306,127 @@ func (rc *RpcContext) SerializeResponse() {
 	sz := rpcMsgMarshaler.Size(rsp)
 	buffer := netpoll.NewLinkBuffer(msgLenSize + sz)
 	// 获取整个写入空间(长度头+消息体)
-	buf, err := buffer.Malloc(msgLenSize + sz)
-	if err != nil {
-		mlog.Errorf("rpc server serializeResponse buffer.Malloc err:%v\n", err)
-		return
-	}
+	buf, _ := buffer.Malloc(msgLenSize + sz)
 	data, err := rpcMsgMarshaler.MarshalAppend(buf[msgLenSize:msgLenSize], rsp) // len=0,cap=len(buf)-msgLenSize
 	if err != nil {
-		mlog.Errorf("rpc server serializeResponse proto.MarshalAppend err:%v\n", err)
+		mlog.Errorf("rpc server serializeResponse proto.MarshalAppend %s err:%v\n", rc.MethodName, err)
 		return
 	}
 	byteOrder.PutUint32(buf[:msgLenSize], uint32(len(data)))
 	if len(data) == len(buf[msgLenSize:]) {
-		mlog.Debugf("rpc server serializeResponse sync send response %v", rc.Conn.c.IsActive())
-		if err = rc.Conn.FlushBuffer(buffer); err != nil {
-			mlog.Errorf("rpc server serializeResponse FlushBuffer err:%v\n", err)
+		mlog.Debugf("rpc server serializeResponse async send response %v", rc.Conn.c.IsActive())
+		if err = rc.Conn.writeBuffer(buffer); err != nil {
+			mlog.Errorf("rpc server serializeResponse writeBuffer err:%v\n", err)
 			return
 		}
 	} else {
-		mlog.Errorf("rpc server serializeResponse size wrong %d, %d\n", len(data), len(buf[msgLenSize:]))
+		mlog.Errorf("rpc server serializeResponse size wrong %s, %d, %d\n", rc.MethodName, len(data), len(buf[msgLenSize:]))
 		return
 	}
 }
 
-func newSvrMuxConn(conn netpoll.Connection) *SvrMuxConn {
-	mc := &SvrMuxConn{c: conn}
-	return mc
+func newSvrWriter(conn netpoll.Connection, chanSize int, ctx context.Context, wg *sync.WaitGroup) *SvrWriter {
+	w := &SvrWriter{
+		c:         conn,
+		writeChan: make(chan *netpoll.LinkBuffer, chanSize),
+	}
+	wg.Add(1)
+	go w.writeLoop(ctx, wg)
+	return w
 }
 
-type SvrMuxConn struct {
-	c   netpoll.Connection
-	mtx sync.Mutex
+type SvrWriter struct {
+	c         netpoll.Connection
+	writeChan chan *netpoll.LinkBuffer
+	cancel    atomic.Value // context.CancelFunc
+	mtx       sync.RWMutex
+	closed    bool
 }
 
-func (mc *SvrMuxConn) FlushBuffer(buffer *netpoll.LinkBuffer) (err error) {
-	mc.mtx.Lock()
-	defer mc.mtx.Unlock()
-	if err = mc.c.Writer().Append(buffer); err != nil {
+func (w *SvrWriter) IsActive() bool {
+	return w.c.IsActive()
+}
+
+func (w *SvrWriter) IsClosed() bool {
+	return w.closed
+}
+
+func (w *SvrWriter) beforeClose() {
+	w.mtx.Lock()
+	defer w.mtx.Unlock()
+
+	if w.closed {
 		return
 	}
-	if err = mc.c.Writer().Flush(); err != nil {
-		return
+	w.closed = true
+	close(w.writeChan)
+	if w.c.IsActive() {
+		for b := range w.writeChan {
+			w.c.Writer().Append(b)
+		}
+		if err := w.c.Writer().Flush(); err != nil {
+			mlog.Errorf("SvrWriter beforeClose flush failed: %v", err)
+		} else {
+			mlog.Info("SvrWriter beforeClose flush success")
+		}
 	}
-	return
+}
+
+func (w *SvrWriter) writeBuffer(buffer *netpoll.LinkBuffer) error {
+	w.mtx.RLock()
+	defer w.mtx.RUnlock()
+
+	if !w.closed {
+		w.writeChan <- buffer
+	}
+	return nil
+}
+
+func (w *SvrWriter) stop() {
+	cancel, ok := w.cancel.Load().(context.CancelFunc)
+	if ok {
+		cancel()
+	}
+}
+
+func (w *SvrWriter) writeLoop(ctx context.Context, wg *sync.WaitGroup) {
+	var cancel context.CancelFunc
+	ctx, cancel = context.WithCancel(ctx)
+	w.cancel.Store(cancel)
+	defer func() {
+		w.beforeClose()
+		wg.Done()
+	}()
+
+	const maxBatchSize = 32 // netpoll barriercap = 32
+	batch := 0
+	flush := func() bool {
+		if err := w.c.Writer().Flush(); err != nil {
+			// closed、WriteTimeout、io error
+			mlog.Errorf("SvrWriter Flush failed: %v", err)
+			return false
+		}
+		batch = 0
+		return true
+	}
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case buffer, ok := <-w.writeChan:
+			if !ok {
+				return
+			}
+			w.c.Writer().Append(buffer) // Append err is always nil
+			batch++
+			if len(w.writeChan) == 0 || batch >= maxBatchSize {
+				mlog.Debugf("SvrWriter writeLoop flush buffer size: %d", batch)
+				if !flush() {
+					w.c.Close()
+					return
+				}
+			}
+		}
+	}
 }

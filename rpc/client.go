@@ -77,7 +77,9 @@ var (
 )
 
 func (c *ClientConn) Close() error {
-	c.closed.Store(true)
+	if c.closed.Swap(true) {
+		return nil
+	}
 	close(c.quit)
 	return c.conn.Close()
 }

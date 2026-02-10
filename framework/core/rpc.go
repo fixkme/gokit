@@ -42,8 +42,8 @@ func InitRpcModule(name string, handlerFunc rpc.RpcHandler, conf *config.RpcConf
 		}
 	}
 	pollerOpts := []netpoll.Option{
-		netpoll.WithReadTimeout(time.Duration(conf.RpcReadTimeout) * time.Millisecond),
-		netpoll.WithWriteTimeout(time.Duration(conf.RpcWriteTimeout) * time.Millisecond),
+		netpoll.WithReadTimeout(time.Duration(conf.RpcReadTimeout) * time.Millisecond),   // zero is no effect
+		netpoll.WithWriteTimeout(time.Duration(conf.RpcWriteTimeout) * time.Millisecond), // zero is no effect
 	}
 	pollerNum := conf.RpcPollerNum
 	if pollerNum == 0 {

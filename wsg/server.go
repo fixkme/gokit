@@ -31,7 +31,7 @@ type ServerOptions struct {
 	MaxPayloadSize int64
 
 	// 握手超时时间，毫秒ms
-	// 出于灵活性考虑，当>0才有效，=0无效时，用户层可以通过心跳处理握手超时
+	// 出于灵活性考虑，当>0才有效，=0无效时，用户层可以通过反向代理处理握手超时
 	HandshakeTimeout int64
 	// 正在握手的连接数量上限
 	MaxHandshakingSize int64
