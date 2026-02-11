@@ -96,14 +96,12 @@ func (a *RoutineAgent) CtxRunFunc(ctx context.Context, f func()) (err error) {
 	}
 
 	errCh := a.Go.SubmitWithResult(f)
-	for {
-		select {
-		case <-ctx.Done():
+	select {
+	case <-ctx.Done():
 
-			return ctx.Err()
-		case err := <-errCh:
-			return err
-		}
+		return ctx.Err()
+	case err := <-errCh:
+		return err
 	}
 }
 

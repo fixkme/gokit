@@ -8,6 +8,14 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
+const (
+	RpcMsgTagKey            = "RpcMsgTag"
+	RpcMsgTag_Common        = 0
+	RpcMsgTag_Sync          = 1
+	RpcMsgTag_AsyncWaitResp = 2
+	RpcMsgTag_AsyncNoResp   = 3 // push
+)
+
 var byteOrder binary.ByteOrder = binary.LittleEndian
 
 // rpc消息的全局解码器，客户端、服务端共用

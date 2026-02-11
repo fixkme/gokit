@@ -239,23 +239,23 @@ func (s *Server) onMsg(ctx context.Context, c netpoll.Connection) (err error) {
 
 	lenBuf, _err := reader.Next(msgLenSize)
 	if err = _err; err != nil {
-		mlog.Debugf("server onMsg read msgLenBuf err:%v", err)
+		mlog.Errorf("server onMsg read msgLenBuf err:%v", err)
 		return
 	}
 	dataLen := int(byteOrder.Uint32(lenBuf))
 	packetBuf, _err := reader.Next(dataLen)
 	if err = _err; err != nil {
-		mlog.Debugf("server onMsg read msg data err:%v", err)
+		mlog.Errorf("server onMsg read msg data err:%v", err)
 		return
 	}
 	// 反序列化
-	msg := &RpcRequestMessage{}
-	if err = rpcMsgUnmarshaler.Unmarshal(packetBuf, msg); err != nil {
+	msg := RpcRequestMessage{}
+	if err = rpcMsgUnmarshaler.Unmarshal(packetBuf, &msg); err != nil {
 		mlog.Errorf("proto.Unmarshal RpcRequestMessage err:%v\n", err)
 		return
 	}
 
-	s.handler(w, msg)
+	s.handler(w, &msg)
 	return
 }
 
@@ -276,12 +276,16 @@ type RpcContext struct {
 func (rc *RpcContext) SerializeResponse() {
 	defer rpcContextPool.Put(rc)
 
+	if rc.ReqMd.GetInt(RpcMsgTagKey) == RpcMsgTag_AsyncNoResp {
+		return
+	}
+
 	if !rc.Conn.c.IsActive() {
 		mlog.Warnf("server conn is not active when serializing response %s", rc.MethodName)
 		return
 	}
 
-	rsp := new(RpcResponseMessage)
+	rsp := RpcResponseMessage{}
 	rsp.Seq = rc.Seq
 	rsp.Md = rc.ReplyMd
 	if rerr := rc.ReplyErr; rerr == nil {
@@ -303,11 +307,11 @@ func (rc *RpcContext) SerializeResponse() {
 	}
 
 	// 反序列化rpc rsp
-	sz := rpcMsgMarshaler.Size(rsp)
+	sz := rpcMsgMarshaler.Size(&rsp)
 	buffer := netpoll.NewLinkBuffer(msgLenSize + sz)
 	// 获取整个写入空间(长度头+消息体)
 	buf, _ := buffer.Malloc(msgLenSize + sz)
-	data, err := rpcMsgMarshaler.MarshalAppend(buf[msgLenSize:msgLenSize], rsp) // len=0,cap=len(buf)-msgLenSize
+	data, err := rpcMsgMarshaler.MarshalAppend(buf[msgLenSize:msgLenSize], &rsp) // len=0,cap=len(buf)-msgLenSize
 	if err != nil {
 		mlog.Errorf("rpc server serializeResponse proto.MarshalAppend %s err:%v\n", rc.MethodName, err)
 		return

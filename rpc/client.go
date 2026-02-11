@@ -67,9 +67,14 @@ var (
 	defaultCallOption  = &CallOption{}
 	ErrInvalidReqData  = errors.New("invalid request data")
 	ErrWaitReplyExceed = errors.New("wait reply exceed")
+	ErrRpcCallTimeout  = errors.New("rpc call timeout")
+	ErrWriteClosed     = errors.New("write: client closed")
 )
 
 func (c *ClientConn) Close() error {
+	c.wmtx.Lock()
+	defer c.wmtx.Unlock()
+	// close fd 也是一种写操作，需要锁保护
 	if c.closed.Swap(true) {
 		return nil
 	}
@@ -103,17 +108,23 @@ func (c *ClientConn) Invoke(ctx context.Context, service, method string, req any
 		return
 	}
 
+	md := opt.ReqMd
+	if opt.Async && opt.AsyncRetChan == nil {
+		if md == nil {
+			md = &Meta{}
+		}
+		md.SetInt(RpcMsgTagKey, RpcMsgTag_AsyncNoResp)
+	}
 	seq := c.genMsgId.Add(1)
-	rpcReq := &RpcRequestMessage{
+	rpcReq := RpcRequestMessage{
 		Seq:         seq,
 		ServiceName: service,
 		MethodName:  method,
-		Md:          opt.ReqMd,
+		Md:          md,
 		Payload:     payload,
 	}
-	buffer, _err := c.encodeRpcReq(rpcReq)
-	if _err != nil {
-		err = _err
+	buffer, _err := c.encodeRpcReq(&rpcReq)
+	if err = _err; _err != nil {
 		return
 	}
 	if err = c.syncWrite(buffer); err != nil {
@@ -122,48 +133,66 @@ func (c *ClientConn) Invoke(ctx context.Context, service, method string, req any
 
 	// 处理异步
 	if opt.Async {
-		if ch := opt.AsyncRetChan; ch != nil {
-			var expireAt int64
-			if opt.Timeout > 0 {
-				expireAt = time.Now().UnixMilli() + int64(opt.Timeout.Milliseconds())
-				c.tmoutMtx.Lock()
-				val, ok := c.timeouts.Get(expireAt)
-				var set map[uint32]struct{}
-				if ok {
-					set = val.(map[uint32]struct{})
-				} else {
-					set = make(map[uint32]struct{}, 1)
-					c.timeouts.Put(expireAt, set)
-				}
-				set[seq] = struct{}{}
-				c.tmoutMtx.Unlock()
-				//fmt.Printf("seq %d deadline %v\n", seq, expireAt)
-				if !c.runTimeout.Load() {
-					c.runTimeout.Store(true)
-					go c.processTimeout()
-				} else {
-					c.updateTimerTrig <- expireAt
-				}
-			}
-			callInfo := &callInfo{asyncRet: ch, outRsp: outRsp, expireAt: expireAt, passThrough: opt.PassThrough}
-			c.mtx.Lock()
-			c.waitRsps[seq] = callInfo
-			c.mtx.Unlock()
-		}
+		err = c.asyncCallWait(seq, outRsp, opt)
 		return
 	}
 
 	// 处理同步
+	return c.syncCallWait(ctx, seq, outRsp, opt)
+}
+
+func (c *ClientConn) asyncCallWait(seq uint32, outRsp proto.Message, opt *CallOption) error {
+	ch := opt.AsyncRetChan
+	if ch == nil {
+		return nil
+	}
+	var expireAt int64
+	if opt.Timeout > 0 {
+		expireAt = time.Now().UnixMilli() + int64(opt.Timeout.Milliseconds())
+	}
+	callInfo := &callInfo{asyncRet: ch, outRsp: outRsp, expireAt: expireAt, passThrough: opt.PassThrough}
+	c.mtx.Lock()
+	c.waitRsps[seq] = callInfo
+	c.mtx.Unlock()
+
+	if expireAt > 0 {
+		c.tmoutMtx.Lock()
+		val, ok := c.timeouts.Get(expireAt)
+		var set map[uint32]struct{}
+		if ok {
+			set = val.(map[uint32]struct{})
+		} else {
+			set = make(map[uint32]struct{}, 1)
+			c.timeouts.Put(expireAt, set)
+		}
+		set[seq] = struct{}{}
+		c.tmoutMtx.Unlock()
+		//fmt.Printf("seq %d deadline %v\n", seq, expireAt)
+		if !c.runTimeout.Swap(true) {
+			go c.processTimeout()
+		} else {
+			// 尝试唤醒更新timer, 失败表示已经有唤醒信号了
+			select {
+			case c.updateTimerTrig <- expireAt:
+			default:
+			}
+		}
+	}
+	return nil
+}
+
+func (c *ClientConn) syncCallWait(ctx context.Context, seq uint32, outRsp proto.Message, opt *CallOption) (rspMd *Meta, rspData []byte, err error) {
 	syncRet := make(chan *callResult, 1)
 	callInfo := &callInfo{syncRet: syncRet}
 	c.mtx.Lock()
 	c.waitRsps[seq] = callInfo
 	c.mtx.Unlock()
 	defer func() {
-		close(syncRet)
 		c.mtx.Lock()
 		delete(c.waitRsps, seq)
 		c.mtx.Unlock()
+		// 必须先删除掉，再关闭，否则写入closed chan会panic
+		close(syncRet)
 	}()
 
 	if opt.Timeout > 0 {
@@ -178,13 +207,12 @@ func (c *ClientConn) Invoke(ctx context.Context, service, method string, req any
 			if ret.senderr != nil {
 				return nil, nil, ret.senderr
 			}
-			if ret.rpcRsp == nil {
-				// 发送成功，但是还没有结果, 也许还在返回的路上
-				// TODO: 解决该问题
-				return nil, nil, ErrWaitReplyExceed
-			}
 			return c.decodeRpcRsp(ret.rpcRsp, outRsp)
 		default:
+			if err = ctx.Err(); errors.Is(err, context.DeadlineExceeded) {
+				// 发送成功，但是还没有结果, 也许还在返回的路上, 业务层处理，见README.md
+				return nil, nil, ErrWaitReplyExceed
+			}
 			return nil, nil, ctx.Err()
 		}
 	case ret := <-syncRet:
@@ -196,13 +224,13 @@ func (c *ClientConn) Invoke(ctx context.Context, service, method string, req any
 }
 
 func (c *ClientConn) syncWrite(buffer *netpoll.LinkBuffer) error {
-	if c.closed.Load() {
-		return errors.New("client closed")
-	}
 	c.wmtx.Lock()
 	defer c.wmtx.Unlock()
-	// 重连也是一种写操作，需要锁保护
 
+	if c.closed.Load() {
+		return ErrWriteClosed
+	}
+	// 重连也是一种写操作，需要锁保护
 	if !c.conn.IsActive() {
 		mlog.Warn("rpc client conn is not active when asyncWrite, now reconnect")
 		c.conn.Close()
@@ -274,13 +302,17 @@ func (cli *ClientConn) onRecvMsg(_ context.Context, conn netpoll.Connection) (er
 	}
 	mlog.Debugf("recv RpcResponseMessage msgId:%v", msg.Seq)
 
+	// TODO panic cli.mtx.Unlock()
 	cli.mtx.Lock()
 	callInfo, ok := cli.waitRsps[msg.Seq]
-	cli.mtx.Unlock()
 	if ok {
 		if callInfo.syncRet != nil {
 			callInfo.syncRet <- &callResult{rpcRsp: msg}
+			cli.mtx.Unlock()
 		} else if callInfo.asyncRet != nil {
+			delete(cli.waitRsps, msg.Seq)
+			cli.mtx.Unlock()
+
 			if exAt := callInfo.expireAt; exAt > 0 {
 				cli.tmoutMtx.Lock()
 				val, ok := cli.timeouts.Get(exAt)
@@ -290,10 +322,6 @@ func (cli *ClientConn) onRecvMsg(_ context.Context, conn netpoll.Connection) (er
 				}
 				cli.tmoutMtx.Unlock()
 			}
-
-			cli.mtx.Lock()
-			delete(cli.waitRsps, msg.Seq)
-			cli.mtx.Unlock()
 
 			rspMd, rspData, callErr := cli.decodeRpcRsp(msg, callInfo.outRsp)
 			asyncRet := &AsyncCallResult{Err: callErr, RspMd: rspMd, PassThrough: callInfo.passThrough}
@@ -306,13 +334,16 @@ func (cli *ClientConn) onRecvMsg(_ context.Context, conn netpoll.Connection) (er
 			case callInfo.asyncRet <- asyncRet:
 				mlog.Debugf("async call push result msgId:%v", msg.Seq)
 			default:
-				mlog.Error("async call result chan is full!!!")
+				mlog.Warn("async call result chan is full!!!")
 				callInfo.asyncRet <- asyncRet
 			}
 		}
 	} else {
-		//rpc异步请求不需要response的情况
-		//mlog.Debugf("cli.waitRsps not find msgId:%v", msg.Seq)
+		cli.mtx.Unlock()
+		// 不在 cli.waitRsps 的情况
+		// 1、rpc异步请求不需要response
+		// 2、rpc同步请求过期删除，异步请求需要response，过期导致在timeout协程删除。业务层处理，见README.md
+		mlog.Warnf("cli.waitRsps not find msgId:%d", msg.Seq)
 	}
 	return
 }
@@ -325,26 +356,17 @@ func (c *ClientConn) processTimeout() {
 	dur := expireAt - nowMs
 	timer := time.NewTimer(time.Millisecond * time.Duration(dur))
 	defer timer.Stop()
-	var wasEmpty, updateTimer bool
+	var expireFirst int64
 	for {
 		select {
 		case <-c.quit:
 			return
-		case newExpireAt := <-c.updateTimerTrig:
-			updateTimer = false
+		case <-c.updateTimerTrig:
 			c.tmoutMtx.Lock()
-			expireAt = c.timeouts.Left().Key.(int64)
+			expireFirst = c.timeouts.Left().Key.(int64)
 			c.tmoutMtx.Unlock()
-			if wasEmpty {
-				wasEmpty = false
-				updateTimer = true
-			} else {
-				if newExpireAt < expireAt {
-					expireAt = newExpireAt
-					updateTimer = true
-				}
-			}
-			if updateTimer {
+			if expireFirst < expireAt {
+				expireAt = expireFirst
 				nowMs = time.Now().UnixMilli()
 				dur = expireAt - nowMs
 				timer.Reset(time.Millisecond * time.Duration(dur))
@@ -376,19 +398,20 @@ func (c *ClientConn) processTimeout() {
 			for _, expireAt := range removes {
 				c.timeouts.Remove(expireAt)
 			}
+			nowMs = time.Now().UnixMilli()
 			if c.timeouts.Size() > 0 {
-				nowMs = time.Now().UnixMilli()
 				expireAt = c.timeouts.Left().Key.(int64)
 				dur = expireAt - nowMs
 				timer.Reset(time.Millisecond * time.Duration(dur))
 			} else {
-				wasEmpty = true
-				timer.Reset(time.Minute * 5)
+				defaultDelay := time.Minute * 2
+				expireAt = nowMs + defaultDelay.Milliseconds()
+				timer.Reset(defaultDelay)
 			}
 			c.tmoutMtx.Unlock()
 			for _, callInfo := range callInfos {
 				if callInfo.asyncRet != nil {
-					callInfo.asyncRet <- &AsyncCallResult{Err: errors.New("rpc async call timeout"), PassThrough: callInfo.passThrough}
+					callInfo.asyncRet <- &AsyncCallResult{Err: ErrRpcCallTimeout, PassThrough: callInfo.passThrough}
 				}
 			}
 		}
@@ -410,6 +433,8 @@ func (c *ClientConn) reconnect() error {
 
 func (cc *ClientConn) initConn(conn netpoll.Connection) {
 	cc.conn = conn
+	conn.SetReadTimeout(cc.opt.ReadTimeout)
+	conn.SetWriteTimeout(cc.opt.WriteTimeout)
 	conn.SetOnRequest(func(ctx context.Context, nc netpoll.Connection) error {
 		return cc.onRecvMsg(ctx, nc)
 	})

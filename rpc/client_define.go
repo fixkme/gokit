@@ -18,6 +18,8 @@ type ClientConnInterface interface {
 
 type ClientOptions struct {
 	DailTimeout    time.Duration
+	ReadTimeout    time.Duration
+	WriteTimeout   time.Duration
 	OnClientClose  func(netpoll.Connection) error
 	MsgUnmarshaler Unmarshaler
 	MsgMarshaler   Marshaler

@@ -7,6 +7,11 @@
 - rpc: 用[netpoll](https://github.com/cloudwego/netpoll)实现的rpc server和client
    * 需要结合[protoc-gen-gom](https://github.com/fixkme/protoc-gen-gom)生成代码
    * 客户端支持异步调用和同步调用，超时处理
+   * rpc框架没有解决“客户端认为超时，但是服务端已经完成”的问题，需要业务层按需处理，下单、扣款等敏感型业务是需要处理的，方法如下：
+      - 业务层要遵循基本规则：客户端的timeout > 服务端的timeout
+      - 每个请求加唯一id requestId，服务端处理后缓存结果，客户端超时的时候重试
+      - 业务层将操作分成两段（请求受理、查询结果），服务端受理后缓存结果用于查询
+      - 业务层在req.Meta设置deadline，服务端执行之前根据情况估计剩余时间是否操作，这个方法不保证一定能一致，但能减少不一致
 - httpapi: 用gin实现http api 路由，通过rpc调用逻辑服务
 - servicediscovery: 服务发现
 - clock: 多层时间轮的定时器实现

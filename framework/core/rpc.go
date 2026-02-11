@@ -70,7 +70,9 @@ func InitRpcModule(name string, handlerFunc rpc.RpcHandler, conf *config.RpcConf
 		},
 	}
 	clientOpt := &rpc.ClientOptions{
-		DailTimeout: 3 * time.Second,
+		DailTimeout:  3 * time.Second,
+		ReadTimeout:  time.Duration(conf.RpcReadTimeout) * time.Millisecond,
+		WriteTimeout: time.Duration(conf.RpcWriteTimeout) * time.Millisecond,
 		OnClientClose: func(c netpoll.Connection) error {
 			mlog.Infof("%s rpc client conn is closed", c.RemoteAddr().String())
 			return nil
