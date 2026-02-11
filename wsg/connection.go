@@ -131,13 +131,12 @@ func (conn *Conn) Send(content []byte) (err error) {
 	if len(content) == 0 {
 		return
 	}
-	wsh := wsHeadPool.Get()
+	wsh := WsHead{}
 	wsh.Fin = true
 	wsh.OpCode = OpBinary
 	wsh.Length = int64(len(content))
-	defer wsHeadPool.Put(wsh)
 
-	hbuff, err := MakeWsHeadBuff(wsh)
+	hbuff, err := MakeWsHeadBuff(&wsh)
 	if err != nil {
 		return err
 	}
@@ -151,13 +150,12 @@ func (conn *Conn) Send(content []byte) (err error) {
 }
 
 func (conn *Conn) innerSendWsOpFrame(op byte, payload []byte) (err error) {
-	wsh := wsHeadPool.Get()
+	wsh := WsHead{}
 	wsh.Fin = true
 	wsh.OpCode = op
 	wsh.Length = int64(len(payload))
-	hbuff, _ := MakeWsHeadBuff(wsh)
+	hbuff, _ := MakeWsHeadBuff(&wsh)
 	defer func() {
-		wsHeadPool.Put(wsh)
 		byteslice.Put(hbuff)
 	}()
 

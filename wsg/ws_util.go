@@ -191,13 +191,12 @@ func ReplyWsError(w io.Writer, statusCode uint16, reason error) (err error) {
 	if reason != nil {
 		reasonDesc = reason.Error()
 	}
-	wsh := wsHeadPool.Get()
+	wsh := WsHead{}
 	wsh.Fin = true
 	wsh.OpCode = OpClose
 	wsh.Length = int64(2 + len(reasonDesc))
-	hbuff, _ := MakeWsHeadBuff(wsh)
+	hbuff, _ := MakeWsHeadBuff(&wsh)
 	defer func() {
-		wsHeadPool.Put(wsh)
 		byteslice.Put(hbuff)
 	}()
 
