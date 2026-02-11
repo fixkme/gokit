@@ -9,14 +9,15 @@ import (
 var (
 	ErrGoChanFull    = errors.New("go chan is full")
 	ErrRoutineClosed = errors.New("routine agent is closed")
+	ErrGoChanClosed  = errors.New("go chan is closed")
 )
 
 type Go struct {
 	ChanCb       chan func()
 	panicHandler func(r any)
+	closed       bool
 }
 
-// New 新建Go
 func NewGoChan(size int) *Go {
 	if size < 1024 {
 		size = 1024
@@ -39,12 +40,17 @@ func (g *Go) SetPanicHandler(f func(r any)) {
 }
 
 func (g *Go) Close() {
+	g.closed = true
 	close(g.ChanCb)
 }
 
 func (g *Go) SubmitWithResult(f func()) (errCh chan error) {
 	errCh = make(chan error, 1)
 	call := func() {
+		if g.closed {
+			errCh <- ErrGoChanClosed
+			return
+		}
 		defer close(errCh)
 		f()
 	}
@@ -58,8 +64,14 @@ func (g *Go) SubmitWithResult(f func()) (errCh chan error) {
 }
 
 func (g *Go) TrySubmit(f func()) (ok bool) {
+	call := func() {
+		if g.closed {
+			return
+		}
+		f()
+	}
 	select {
-	case g.ChanCb <- f:
+	case g.ChanCb <- call:
 		return true
 	default:
 		return false
@@ -67,7 +79,13 @@ func (g *Go) TrySubmit(f func()) (ok bool) {
 }
 
 func (g *Go) MustSubmit(f func()) {
-	g.ChanCb <- f
+	call := func() {
+		if g.closed {
+			return
+		}
+		f()
+	}
+	g.ChanCb <- call
 }
 
 func (g *Go) Exec(cb func()) {
