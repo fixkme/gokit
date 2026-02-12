@@ -47,6 +47,9 @@ func NewEtcdDiscovery(ctx context.Context, serviceGroup string, opt *EtcdOptions
 	}
 
 	// 监视"service:"前缀的key，此类key变动时，将通知到rch管道
+	if serviceGroup == "" {
+		serviceGroup = "gbs"
+	}
 	prefix := fmt.Sprintf("%s:service:", serviceGroup)
 
 	e := &etcdImp{

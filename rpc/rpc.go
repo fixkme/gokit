@@ -27,7 +27,7 @@ type RpcImp struct {
 }
 
 func NewRpc(pctx context.Context, rpcAddr, serviceGroup string, etcdConf *etcd.EtcdOptions, serverOpt *ServerOptions, cliOpt *ClientOptions) (*RpcImp, error) {
-	if rpcAddr == "" {
+	if rpcAddr == "" && serverOpt.ListenAddr == "" {
 		return nil, errors.New("rpcAddr is empty")
 	}
 
@@ -41,6 +41,10 @@ func NewRpc(pctx context.Context, rpcAddr, serviceGroup string, etcdConf *etcd.E
 	if err != nil {
 		cancel()
 		return nil, err
+	}
+	if rpcAddr == "" {
+		rpcAddr = server.listener.Addr().String()
+		mlog.Infof("peer connect rpc server by addr:%s", rpcAddr)
 	}
 	imp := &RpcImp{
 		etcd:    etcd,

@@ -45,6 +45,11 @@ type RedisConfig struct {
 	RedisDB         int    `json:"redis_db" mapstructure:"redis_db"`
 }
 
+type HttpApiConfig struct {
+	ApiVersion    string `json:"api_version" mapstructure:"api_version"`
+	ApiListenAddr string `json:"api_listen_addr" mapstructure:"api_listen_addr"`
+}
+
 func LoadConfig(configFile string, loadConfigFromEnv func(*AppConfig) error) error {
 	Config = new(AppConfig)
 	if len(configFile) == 0 {

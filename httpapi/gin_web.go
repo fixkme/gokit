@@ -3,30 +3,44 @@ package httpapi
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"reflect"
 	"strings"
 
-	"github.com/fixkme/gokit/errs"
 	"github.com/fixkme/gokit/mlog"
 	"github.com/fixkme/gokit/rpc"
 	"github.com/fixkme/gokit/util"
 	"github.com/gin-gonic/gin"
 	"google.golang.org/protobuf/proto"
-	"google.golang.org/protobuf/reflect/protoreflect"
-	"google.golang.org/protobuf/reflect/protoregistry"
 )
 
 type Server struct {
+	opt       *Options
 	rpcClient rpc.RpcClient
 	Addr      string
 	Ln        net.Listener
 	Router    *gin.Engine
 }
 
-func NewWeb(network, addr string, rpcClient rpc.RpcClient, middleware ...gin.HandlerFunc) (*Server, error) {
+type Options struct {
+	// 版本号，可以为空
+	ApiVersion string
+	// Middlewares 里可以添加鉴权的逻辑
+	Middlewares []gin.HandlerFunc
+	// 构造消息的方法, 必须提供
+	MakeMessage MakeMessageHandler
+}
+
+type MakeMessageHandler func(c *gin.Context, serviceName, methodName string) (req proto.Message, resp proto.Message, err error)
+
+func NewWeb(network, addr string, rpcClient rpc.RpcClient, opt *Options) (*Server, error) {
+	if opt.MakeMessage == nil {
+		return nil, errors.New("MakeMessageHandler is nil")
+	}
+
 	ln, err := net.Listen(network, addr)
 	if err != nil {
 		return nil, err
@@ -34,11 +48,9 @@ func NewWeb(network, addr string, rpcClient rpc.RpcClient, middleware ...gin.Han
 
 	setMode()
 	engine := gin.New()
-	if len(middleware) > 0 {
-		engine.Use(middleware...)
-	}
 
 	return &Server{
+		opt:       opt,
 		rpcClient: rpcClient,
 		Addr:      addr,
 		Ln:        ln,
@@ -72,11 +84,18 @@ func (s *Server) Stop() {
 
 func (s *Server) regWebRouter() {
 	v0 := s.Router.Group("/v0")
-	v0.GET("/myip", s.myIPHandler)
-	v0.POST("/myip", s.myIPHandler)
+	v0.GET("/myip", s.clientIPHandler)
+	v0.POST("/myip", s.clientIPHandler)
 
-	v1 := s.Router.Group("/api")
-	v1.Any("/:service/:pathname", s.httpHandler)
+	groupName := "/api"
+	if s.opt.ApiVersion != "" {
+		groupName = fmt.Sprintf("/api/%s", s.opt.ApiVersion)
+	}
+	apiGroup := s.Router.Group(groupName)
+	if len(s.opt.Middlewares) > 0 {
+		apiGroup.Use(s.opt.Middlewares...)
+	}
+	apiGroup.Any("/:service/:pathname", s.httpHandler)
 }
 
 // http handler
@@ -84,14 +103,11 @@ func (s *Server) httpHandler(c *gin.Context) {
 	serviceName := c.Param("service")
 	methodName := c.Param("pathname")
 	httpMethod := c.Request.Method
-	serviceName = strings.ToLower(serviceName)
-	methodName = strings.ToLower(methodName)
-	httpMethod = strings.ToLower(httpMethod)
 	mlog.Debugf("httpHandler HttpMethod:%s Content-Type:%s URL:%s, serviceName:%s, methodName:%s", httpMethod, c.ContentType(), c.Request.URL, serviceName, methodName)
 
-	req, resp, err := s.makeMsg(serviceName, methodName)
+	req, resp, err := s.opt.MakeMessage(c, serviceName, methodName)
 	if err != nil {
-		Response(c, http.StatusBadRequest, &ResponseResult{Ecode: 2301, Error: err.Error()})
+		ResponseError(c, http.StatusBadRequest, err)
 		return
 	}
 
@@ -102,12 +118,12 @@ func (s *Server) httpHandler(c *gin.Context) {
 	// 上传文件情况：提取文件数据到proto.Message
 	if c.ContentType() == "multipart/form-data" {
 		if err := fillReqUsingFormData(c, req); err != nil {
-			Response(c, http.StatusBadRequest, &ResponseResult{Ecode: 2302, Error: err.Error()})
+			ResponseError(c, http.StatusBadRequest, err)
 			return
 		}
 	} else {
-		if err := c.Bind(req); nil != err {
-			Response(c, http.StatusBadRequest, &ResponseResult{Ecode: 2302})
+		if err := c.Bind(req); err != nil {
+			ResponseError(c, http.StatusBadRequest, err)
 			mlog.Warnf("HTTP request bind json error: %s", err)
 			return
 		}
@@ -118,29 +134,11 @@ func (s *Server) httpHandler(c *gin.Context) {
 		return resp, _err
 	})
 	if err != nil {
-		errCode, errDesc := parserError(err)
-		mlog.Debugf("HTTP(%s %s/%s) call RPC error: %s %d|%s", serviceName, methodName, httpMethod, err, errCode, errDesc)
-		Response(c, http.StatusInternalServerError, &ResponseResult{Ecode: errCode, Data: resp, Error: errDesc})
+		mlog.Errorf("HTTP(%s,%s,%s) call RPC error: %s", httpMethod, serviceName, methodName, err)
+		ResponseError(c, http.StatusInternalServerError, err)
 		return
 	}
-	Response(c, http.StatusOK, &ResponseResult{Ecode: 0, Data: resp})
-}
-
-func (s *Server) makeMsg(service, method string) (req, resp proto.Message, err error) {
-	method = util.UpperFirst(method)
-	reqFullName := service + ".C" + method
-	respFullName := service + ".S" + method
-	reqType, err := protoregistry.GlobalTypes.FindMessageByName(protoreflect.FullName(reqFullName))
-	if err != nil {
-		return
-	}
-	respType, err := protoregistry.GlobalTypes.FindMessageByName(protoreflect.FullName(respFullName))
-	if err != nil {
-		return
-	}
-	req = reqType.New().(proto.Message)
-	resp = respType.New().(proto.Message)
-	return
+	ResponseSuccess(c, resp)
 }
 
 type myIP struct {
@@ -149,7 +147,7 @@ type myIP struct {
 }
 
 // 回复客户端使用的IP
-func (s *Server) myIPHandler(c *gin.Context) {
+func (s *Server) clientIPHandler(c *gin.Context) {
 	c.JSON(http.StatusOK, myIP{IP: c.ClientIP()})
 }
 
@@ -215,12 +213,19 @@ func fillReqUsingFormData(c *gin.Context, req proto.Message) error {
 	return nil
 }
 
-func parserError(err error) (errCode int, errDesc string) {
-	codeErr, ok := err.(errs.CodeError)
-	if ok {
-		errCode, errDesc = int(codeErr.Code()), codeErr.Error()
-	} else {
-		errCode, errDesc = errs.ErrCode_Unknown, err.Error()
+// 通用消息构造逻辑，前提是已经import了pb代码，如：import _ "github.com/fixkme/protoc-gen-gom/example/pbout/go/game"
+func MakeMessageFunc(c *gin.Context, service, method string) (req proto.Message, resp proto.Message, err error) {
+	reqFullName := service + ".C" + method
+	respFullName := service + ".S" + method
+	req, err = util.MakeMessageByFullName(reqFullName)
+	if err != nil {
+		err = fmt.Errorf("make request message failed: %s", err)
+		return
+	}
+	resp, err = util.MakeMessageByFullName(respFullName)
+	if err != nil {
+		err = fmt.Errorf("make response message failed: %s", err)
+		return
 	}
 	return
 }

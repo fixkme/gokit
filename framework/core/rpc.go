@@ -36,7 +36,7 @@ func InitRpcModule(name string, handlerFunc rpc.RpcHandler, conf *config.RpcConf
 	}
 	rpcAddr := conf.RpcAddr
 	listenAddr := conf.RpcListenAddr
-	if listenAddr == "" {
+	if listenAddr == "" && rpcAddr != "" {
 		idx := strings.LastIndex(rpcAddr, ":")
 		if idx != -1 {
 			listenAddr = rpcAddr[idx:]

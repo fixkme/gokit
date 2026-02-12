@@ -1,6 +1,11 @@
 package httpapi
 
-import "github.com/gin-gonic/gin"
+import (
+	"net/http"
+
+	"github.com/fixkme/gokit/errs"
+	"github.com/gin-gonic/gin"
+)
 
 // 返回格式
 type ResponseResult struct {
@@ -9,10 +14,6 @@ type ResponseResult struct {
 	Data  interface{} `json:"data"`  // 业务数据，如果不设置时默认为json空对象{}
 }
 
-// ResponseResult 遵循web规范的http返回
-// c http请求的上下文
-// httpStatus http状态码，由于业务完全使用返回的status判断是否成功，禁止返回204/205这一类没有任何返回的状态码（否则会收不到json返回）
-// response 返回的json，格式为 { "status": xxx,"data": xxx }
 func Response(c *gin.Context, httpStatus int, response *ResponseResult) {
 	data := response.Data
 	if response.Data == nil {
@@ -28,4 +29,44 @@ func Response(c *gin.Context, httpStatus int, response *ResponseResult) {
 			},
 		},
 	})
+}
+
+func ResponseError(c *gin.Context, httpStatus int, err error) {
+	errCode, errDesc := parserError(err)
+	c.JSON(httpStatus, gin.H{
+		"status": errCode,
+		"error":  errDesc,
+		"data":   gin.H{},
+		"_links": gin.H{
+			"self": gin.H{
+				"href": c.Request.RequestURI,
+			},
+		},
+	})
+}
+
+func ResponseSuccess(c *gin.Context, data any) {
+	if data == nil {
+		data = gin.H{}
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"status": 0,
+		"error":  "",
+		"data":   data,
+		"_links": gin.H{
+			"self": gin.H{
+				"href": c.Request.RequestURI,
+			},
+		},
+	})
+}
+
+func parserError(err error) (errCode int, errDesc string) {
+	codeErr, ok := err.(errs.CodeError)
+	if ok {
+		errCode, errDesc = int(codeErr.Code()), codeErr.Error()
+	} else {
+		errCode, errDesc = errs.ErrCode_Unknown, err.Error()
+	}
+	return
 }
