@@ -31,7 +31,9 @@ func newDefaultLogger(logpath, logName string, level Level, stdOut bool) (*logge
 		return nil, err
 	}
 	fileLogger := log.New(logfile, "", log.Ldate|log.Lmicroseconds)
-
+	if stdOut {
+		log.SetFlags(log.Ldate | log.Lmicroseconds)
+	}
 	mlog := &loggerImp{
 		path:   logpath,
 		ll:     fileLogger,
@@ -65,7 +67,7 @@ func (me *loggerImp) Start(ctx context.Context, wg *sync.WaitGroup) {
 					select {
 					case str := <-me.buff:
 						if me.stdOut {
-							fmt.Println(str)
+							log.Println(str)
 						}
 						me.ll.Println(str)
 					default:
@@ -74,7 +76,7 @@ func (me *loggerImp) Start(ctx context.Context, wg *sync.WaitGroup) {
 				}
 			case str := <-me.buff:
 				if me.stdOut {
-					fmt.Println(str)
+					log.Println(str)
 				}
 				me.ll.Println(str)
 			case <-timer.C:

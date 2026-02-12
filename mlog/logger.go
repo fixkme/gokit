@@ -39,6 +39,12 @@ func UseDefaultLogger(ctx context.Context, wg *sync.WaitGroup, path string, logN
 	return nil
 }
 
+func UseStdLogger(level Level) error {
+	l := newStdoutLogger(level)
+	SetLogger(l)
+	return nil
+}
+
 type Level uint32
 
 const (
