@@ -2,6 +2,7 @@ package g
 
 import (
 	"errors"
+	"runtime/debug"
 
 	"github.com/fixkme/gokit/mlog"
 )
@@ -28,7 +29,7 @@ func NewGoChan(size int) *Go {
 	g := new(Go)
 	g.ChanCb = make(chan func(), size)
 	g.panicHandler = func(r any) {
-		mlog.Errorf("go run panic: %v", r)
+		mlog.Errorf("go run panic: %v\n%s", r, debug.Stack())
 	}
 	return g
 }
