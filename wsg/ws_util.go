@@ -141,6 +141,7 @@ func MaskWsPayload(mask [4]byte, payload []byte) {
 
 func MakeWsHeadBuff(h *WsHead) (buff []byte, err error) {
 	bts := byteslice.Get(MaxWsHeaderSize)
+	bts[0] = 0
 	//bts := make([]byte, MaxWsHeaderSize)
 	if h.Fin {
 		bts[0] |= 0x80
