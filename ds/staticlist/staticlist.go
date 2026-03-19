@@ -66,32 +66,39 @@ func (list *StaticList[T]) GetDataPointer(p int) *T {
 	return &list.datas[p].Data
 }
 
-func (list *StaticList[T]) GetDataIndex(dataPtr *T) int {
-	if len(list.datas) == 0 {
+func (list *StaticList[T]) SafeGetDataIndex(dataPtr *T) int {
+	if len(list.datas) == 0 || dataPtr == nil {
 		return -1
 	}
 
-	pdata := unsafe.Pointer(dataPtr)
-	elemPtr := (*Node[T])(pdata)
-
-	sliceDataPtr := unsafe.Pointer(&list.datas[0])
-	targetPtr := unsafe.Pointer(elemPtr)
-
+	nodePtr := (*Node[T])(unsafe.Pointer(dataPtr)) // Data 为首字段
+	base := uintptr(unsafe.Pointer(&list.datas[0]))
+	target := uintptr(unsafe.Pointer(nodePtr))
 	elemSize := unsafe.Sizeof(list.datas[0])
-	offset := uintptr(targetPtr) - uintptr(sliceDataPtr)
+	end := base + uintptr(len(list.datas))*elemSize
 
-	// 检查偏移是否合法
+	if target < base || target >= end {
+		return -1
+	}
+
+	offset := target - base
 	if offset%elemSize != 0 {
 		return -1
 	}
+
 	index := int(offset / elemSize)
-	if index < 0 || index >= len(list.datas) {
+	if &list.datas[index] != nodePtr {
 		return -1
 	}
+	return index
+}
 
-	if &list.datas[index] == elemPtr {
-		return index
-	}
-
-	return -1
+// dataPtr 的合法性由上层确定
+func (list *StaticList[T]) MustGetDataIndex(dataPtr *T) int {
+	// 基于 Node.Data 为Node第一个字段
+	base := uintptr(unsafe.Pointer(&list.datas[0]))
+	addr := uintptr(unsafe.Pointer(dataPtr))
+	size := unsafe.Sizeof(list.datas[0])
+	index := int((addr - base) / size)
+	return index
 }

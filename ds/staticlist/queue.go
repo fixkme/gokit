@@ -52,40 +52,44 @@ func (q *Queue[T]) Push(data T) *QNode[T] {
 	return node
 }
 
-func (q *Queue[T]) Pop() (data T, ok bool) {
+func (q *Queue[T]) Pop() (data T) {
 	if q.IsEmpty() {
 		return //empty
 	}
 	node := q.root.next
 	data = node.Value
-	ok = q.Remove(node)
+	q.Remove(node)
 	return
 }
 
-func (q *Queue[T]) Remove(node *QNode[T]) bool {
-	if node.prev == nil || node.next == nil {
-		return false
-	}
-
-	pdata := unsafe.Pointer(node)
-	slot := (*Node[QNode[T]])(pdata)
+// node的合法性由上层确定；会清除 node.Value 的值，因为node内存会被回收
+func (q *Queue[T]) Remove(node *QNode[T]) {
+	slot := (*Node[QNode[T]])(unsafe.Pointer(node))
 	p := slot.Next // 在Push的时候设置的index
-
-	// p := q.pool.GetDataIndex(node)
-	// if p < 0 {
-	// 	return false
-	// }
 
 	node.prev.next = node.next
 	node.next.prev = node.prev
 
-	// 在Free时会清除，这里不用显式清除prev，next
-	// node.prev = nil
-	// node.next = nil
-
+	// 在Free时会清除prev，next = nil
 	q.pool.Free(p)
 	q.len--
-	return true
+}
+
+// 删除并放到最后
+func (q *Queue[T]) MoveToBack(node *QNode[T]) {
+	if q.root.prev == node {
+		// already in back
+		return
+	}
+	// remove
+	node.prev.next = node.next
+	node.next.prev = node.prev
+	// push back
+	tail := q.root.prev
+	tail.next = node
+	node.prev = tail
+	node.next = q.root
+	q.root.prev = node
 }
 
 func (q *Queue[T]) Clear() {
