@@ -24,11 +24,11 @@
 - framework: 快速构建server app的框架，接近业务层，基本都是默认参数构建的模块
     * app: 栈形式运行module，一个module代表一个协程业务
     * config: 配置定义和加载
-    * core: 框架核心模块，包括rpc、mongo、redis
+    * core: 框架核心模块，包括rpc、httpapi、mongo、redis
     * go：协程worker封装
 
 ##### 2、实践例子
 1. 本人开发的黑白棋[othello](https://github.com/fixkme/othello)
 
 ##### 3、待解决和优化
-1. netpoll rpc server和client 写操作要不要用写协程替换mutex
+1. netpoll rpc client 写操作要不要用写协程替换mutex
