@@ -3,6 +3,7 @@ package kcp
 import (
 	"context"
 	"errors"
+	"math"
 	"net"
 	"sync"
 	"sync/atomic"
@@ -146,7 +147,7 @@ func (s *Session) Send(data []byte) error {
 		return errors.New("dead link")
 	}
 	count := (len(data) + int(s.kcp.mss) - 1) / int(s.kcp.mss)
-	if count >= int(s.kcp.snd_wnd) {
+	if count >= int(s.kcp.snd_wnd) || count >= math.MaxUint8 {
 		return errors.New("data is too large")
 	}
 	if s.kcp.WaitSnd() >= int(s.kcp.snd_wnd) {
