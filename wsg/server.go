@@ -199,6 +199,8 @@ func (s *Server) handshake(conn *Conn) error {
 		return nil
 	}
 
+	// 期望datas以crlf结尾，否则下面构造httpReq会失败；
+	// 也就说，客户端必须等待服务器握手响应后才能发送帧数据
 	c.Discard(len(datas))
 
 	reader := bufio.NewReader(bytes.NewReader(datas))
